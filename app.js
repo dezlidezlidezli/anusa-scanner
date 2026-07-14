@@ -329,13 +329,15 @@ function greyscaleStretch(canvas) {
   return canvas;
 }
 
-function initBarcodeDetector() {
-  if (!('BarcodeDetector' in window)) return;
-  BarcodeDetector.getSupportedFormats().then(fmts => {
-    const want = ['pdf417', 'code_128', 'code_39', 'code_93'];
-    const use = want.filter(f => fmts.includes(f));
-    window._bd = new BarcodeDetector({formats: use.length ? use : fmts});
-  }).catch(() => {});
+function flashGreen() {
+  const el = $('#successFlash');
+  el.style.opacity = '1';
+  el.style.display = 'block';
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    el.style.transition = 'opacity 0.5s ease-out';
+    el.style.opacity = '0';
+    setTimeout(() => { el.style.display = 'none'; el.style.transition = ''; }, 550);
+  }));
 }
 
 async function initOCR() {
@@ -414,49 +416,114 @@ function grabReticle() {
 }
 
 // Physical layout of the ANU ID-1 card (85.6 × 54 mm, landscape orientation).
-// Coordinates measured from the debug-canvas analysis; tune if ppm drifts.
+// Tune BC_H_MM / OFF_* if the extracted patch drifts; OUT_H trades speed for clarity.
 const KS = {
-  BC_W_MM:   28,   // physical barcode width — sets the pixels-per-mm scale
-  OFF_X_MM:  18,   // barcode-centre → student-number-centre, card +x (rightward)
-  OFF_Y_MM:  27,   // barcode-centre → student-number-centre, card +y (downward)
-  PATCH_W_MM: 42,  // extraction patch width  (generous, OCR + extractId filter noise)
-  PATCH_H_MM: 16,  // extraction patch height
-  OUT_H:     200,  // output canvas height in px
+  BC_H_MM:    38,   // barcode physical height — used for ppm from eigenvalue spread
+  OFF_X_MM:   18,   // barcode-centre → student-number-centre, card +x (rightward)
+  OFF_Y_MM:   27,   // barcode-centre → student-number-centre, card +y (downward)
+  PATCH_W_MM: 42,   // extraction patch width  (generous)
+  PATCH_H_MM: 16,   // extraction patch height
+  OUT_H:      200,  // output canvas height in px
+  DARK_RATIO: 0.60, // threshold = mean * DARK_RATIO (relative to scene brightness)
+  BD_THRESH:  0.55, // high-density block threshold = maxDensity * BD_THRESH (relative)
 };
 
-async function keystoneGrab() {
+// Locate the barcode region by edge-transition density (no decoding required —
+// works even on worn/blurry barcodes). Returns {snx,sny,angle,ppm} in video pixels.
+function densityKeystone(video) {
+  const VW = video.videoWidth, VH = video.videoHeight;
+  if (!VW || !VH) return null;
+
+  // Downsample to ~192px wide for fast analysis
+  const S   = Math.max(1, Math.round(VW / 192));
+  const AW  = Math.ceil(VW/S), AH = Math.ceil(VH/S);
+  const tmp = document.createElement('canvas');
+  tmp.width = AW; tmp.height = AH;
+  const tctx = tmp.getContext('2d', {willReadFrequently: true});
+  tctx.drawImage(video, 0, 0, AW, AH);
+  const raw = tctx.getImageData(0, 0, AW, AH).data;
+
+  // Grayscale (fixed-point integer — avoids repeated float ops)
+  const gray = new Uint8Array(AW * AH);
+  let gsum = 0;
+  for (let i=0,p=0; i<gray.length; i++,p+=4) {
+    gray[i] = (raw[p]*77 + raw[p+1]*150 + raw[p+2]*29) >> 8;
+    gsum += gray[i];
+  }
+  // Relative dark threshold: fraction of scene mean — adapts to lighting
+  const darkT = (gsum / gray.length) * KS.DARK_RATIO;
+
+  // Per-pixel 4-neighbour transition count: high = barcode-like texture
+  const trans = new Uint8Array(AW * AH);
+  for (let y=1; y<AH-1; y++) {
+    for (let x=1; x<AW-1; x++) {
+      const c = gray[y*AW+x] < darkT;
+      trans[y*AW+x] =
+        ((gray[y*AW+x+1]  < darkT) !== c ? 1 : 0) +
+        ((gray[y*AW+x-1]  < darkT) !== c ? 1 : 0) +
+        ((gray[(y+1)*AW+x]< darkT) !== c ? 1 : 0) +
+        ((gray[(y-1)*AW+x]< darkT) !== c ? 1 : 0);
+    }
+  }
+
+  // Block density map (6×6 analysis-px blocks)
+  const BLK = 6;
+  const NBX = Math.floor(AW/BLK), NBY = Math.floor(AH/BLK);
+  const bd = new Float32Array(NBX * NBY);
+  let maxBD = 0;
+  for (let by=0; by<NBY; by++)
+    for (let bx=0; bx<NBX; bx++) {
+      let s=0;
+      for (let y=by*BLK; y<(by+1)*BLK && y<AH; y++)
+        for (let x=bx*BLK; x<(bx+1)*BLK && x<AW; x++)
+          s += trans[y*AW+x];
+      bd[by*NBX+bx] = s;
+      if (s > maxBD) maxBD = s;
+    }
+  if (maxBD < 8) return null;
+
+  // Weighted centroid + second moments of blocks above relative density threshold
+  const bdT = maxBD * KS.BD_THRESH;
+  let wcx=0, wcy=0, wsum=0;
+  for (let by=0; by<NBY; by++)
+    for (let bx=0; bx<NBX; bx++) {
+      const d=bd[by*NBX+bx]; if (d<bdT) continue;
+      wcx += (bx+.5)*BLK*d; wcy += (by+.5)*BLK*d; wsum += d;
+    }
+  if (!wsum) return null;
+  const cx=wcx/wsum, cy=wcy/wsum;
+
+  let m20=0, m02=0, m11=0;
+  for (let by=0; by<NBY; by++)
+    for (let bx=0; bx<NBX; bx++) {
+      const d=bd[by*NBX+bx]; if (d<bdT) continue;
+      const dx=(bx+.5)*BLK-cx, dy=(by+.5)*BLK-cy;
+      m20+=dx*dx*d; m02+=dy*dy*d; m11+=dx*dy*d;
+    }
+  m20/=wsum; m02/=wsum; m11/=wsum;
+
+  // Card orientation angle from principal axis of barcode density blob
+  const angle = 0.5 * Math.atan2(2*m11, m20-m02);
+
+  // ppm from eigenvalue spread (uniform distribution: σ = L/(2√3))
+  const ev1 = (m20+m02)/2 + Math.sqrt(((m20-m02)/2)**2 + m11**2);
+  const ppm  = Math.sqrt(ev1) * S * 2*Math.sqrt(3) / KS.BC_H_MM;
+
+  // Project barcode centre → student number centre in video pixels
+  const vcx=cx*S, vcy=cy*S;
+  const cos=Math.cos(angle), sin=Math.sin(angle);
+  const snx = vcx + (KS.OFF_X_MM*cos - KS.OFF_Y_MM*sin)*ppm;
+  const sny = vcy + (KS.OFF_X_MM*sin + KS.OFF_Y_MM*cos)*ppm;
+
+  if (snx<0||snx>VW||sny<0||sny>VH) return null;
+  return {snx, sny, angle, ppm};
+}
+
+function keystoneGrab() {
   const video = $('#video');
-  if (!window._bd || !video.videoWidth) return null;
-  let codes;
-  try { codes = await window._bd.detect(video); }
-  catch(e) { return null; }
-  if (!codes || !codes.length) return null;
-
-  // Pick the largest barcode (area) to avoid spurious tiny codes
-  const bc = codes.reduce((a, b) => {
-    const area = c => { const p = c.cornerPoints;
-      return Math.abs((p[1].x-p[0].x)*(p[3].y-p[0].y) - (p[3].x-p[0].x)*(p[1].y-p[0].y)); };
-    return area(a) >= area(b) ? a : b;
-  });
-
-  // cornerPoints: top-left, top-right, bottom-right, bottom-left
-  // in intrinsic video pixel coords (0..videoWidth × 0..videoHeight)
-  const pts = bc.cornerPoints;
-  const bcx = (pts[0].x+pts[1].x+pts[2].x+pts[3].x) / 4;
-  const bcy = (pts[0].y+pts[1].y+pts[2].y+pts[3].y) / 4;
-
-  // Card angle = direction of barcode's top edge (pts[0]→pts[1])
-  const angle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
-
-  // Pixels per mm from barcode physical width
-  const ppm = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y) / KS.BC_W_MM;
-
-  // Rotate the card-local offset vector into image space
-  const cos = Math.cos(angle), sin = Math.sin(angle);
-  const snx = bcx + (KS.OFF_X_MM * cos - KS.OFF_Y_MM * sin) * ppm;
-  const sny = bcy + (KS.OFF_X_MM * sin + KS.OFF_Y_MM * cos) * ppm;
-
-  // Extract a deskewed patch centred on the student-number location
+  const ks = densityKeystone(video);
+  if (!ks) return null;
+  const {snx, sny, angle, ppm} = ks;
   const outH = KS.OUT_H;
   const outW = Math.round(KS.PATCH_W_MM / KS.PATCH_H_MM * outH);
   const out  = document.createElement('canvas');
@@ -490,7 +557,7 @@ async function scanTick() {
   if (!state.scanning || state.busy || !state.workerReady) return;
   state.busy = true;
   try {
-    const frame = await keystoneGrab() || grabReticle();
+    const frame = keystoneGrab() || grabReticle();
     if (frame) {
       if (dbgVisible) {
         const dbg = $('#dbgCanvas');
@@ -539,11 +606,17 @@ function handleRead(id) {
   if (id !== state.lastRead) { state.lastRead = id; return; }
   state.lastRead = null;
 
-  const now = Date.now();
-  if (state.lastAccepted.id === id && now - state.lastAccepted.t < 8000) return;  // same card, debounce
-  state.lastAccepted = { id, t: now };
+  // Block re-scan of any ID already in history — show Re-scan button instead
+  if (state.history.some(h => h.id === id)) {
+    const btn = $('#rescanBtn');
+    btn.dataset.rid = id;
+    btn.style.display = 'block';
+    return;
+  }
+  state.lastAccepted = { id, t: Date.now() };
 
-  beep(); flashReticle();
+  flashGreen(); beep(); flashReticle();
+  $('#rescanBtn').style.display = 'none';
   setReadout(id, '', '');
   sendScan(id, 'ocr');
 }
@@ -579,7 +652,6 @@ async function onStart() {
     await startCamera();
     $('#gate').style.display = 'none';
     connectBridge();          // don't block scanning on the relay
-    initBarcodeDetector();
     await initOCR();
     startScanning();
   } catch (e) {
@@ -655,6 +727,19 @@ function wireUI() {
     dbgVisible = !dbgVisible;
     $('#dbgCanvas').style.display = dbgVisible ? 'block' : 'none';
     if (!dbgVisible) { const d = $('#dbgCanvas'); d.width = 0; }
+  });
+
+  $('#rescanBtn').addEventListener('click', () => {
+    const id = $('#rescanBtn').dataset.rid;
+    if (!id) return;
+    // Remove all history entries for this ID so it can be re-sent cleanly
+    state.history = state.history.filter(h => h.id !== id);
+    persistHistory(); renderHistory();
+    state.lastAccepted = { id, t: Date.now() };
+    flashGreen(); beep(); flashReticle();
+    $('#rescanBtn').style.display = 'none';
+    setReadout(id, '', '');
+    sendScan(id, 'ocr');
   });
 
   $('#histBtn').addEventListener('click', () => $('#hist').classList.toggle('open'));
