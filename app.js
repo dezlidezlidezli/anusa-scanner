@@ -356,9 +356,13 @@ function grabReticle() {
   }
   ctx.putImageData(img, 0, 0);
 
-  // Card held portrait → digits run bottom-to-top; rotate 90° CW so text is horizontal for Tesseract
+  // Only rotate when the video stream is portrait (iPhone back camera in portrait mode).
+  // Mac/webcam delivers landscape frames where card text already reads horizontally —
+  // applying the rotation there would make the text vertical and break OCR.
+  if (video.videoHeight <= video.videoWidth) return c;
+
   const rot = document.createElement('canvas');
-  rot.width  = c.height;   // tall axis becomes the width
+  rot.width  = c.height;
   rot.height = c.width;
   const rctx = rot.getContext('2d');
   rctx.translate(rot.width, 0);
@@ -369,10 +373,15 @@ function grabReticle() {
 
 function extractId(text, nDigits, prefix) {
   const ok = (r) => r.length === nDigits && (!prefix || r.startsWith(prefix));
+  const rev = (r) => r.split('').reverse().join('');
   const runs = text.match(/\d+/g) || [];
-  for (const r of runs) if (ok(r)) return r;                     // clean run
+  for (const r of runs) if (ok(r)) return r;         // clean forward run
   const joined = runs.join('');
-  if (ok(joined)) return joined;                                 // digits split by spaces
+  if (ok(joined)) return joined;                      // digits split by spaces (forward)
+  // Reverse fallback — catches card held 180° flipped or camera-mirrored reads
+  for (const r of runs) { const rv = rev(r); if (ok(rv)) return rv; }
+  const rj = rev(joined);
+  if (ok(rj)) return rj;
   return null;
 }
 
