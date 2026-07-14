@@ -219,14 +219,30 @@ function unlockAudio() {
 function beep() {
   if (!state.audio) return;
   try {
-    const t0 = state.audio.currentTime;
-    const osc = state.audio.createOscillator(), g = state.audio.createGain();
-    osc.type = 'square'; osc.frequency.setValueAtTime(880, t0); osc.frequency.setValueAtTime(1320, t0 + 0.07);
-    g.gain.setValueAtTime(0.12, t0); g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
-    osc.connect(g); g.connect(state.audio.destination);
+    const ctx = state.audio;
+    const t0 = ctx.currentTime;
+
+    // Audible confirmation tone
+    const osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(880, t0);
+    osc.frequency.setValueAtTime(1320, t0 + 0.07);
+    g.gain.setValueAtTime(0.12, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
+    osc.connect(g); g.connect(ctx.destination);
     osc.start(t0); osc.stop(t0 + 0.17);
+
+    // Physical thump via speaker — iOS Taptic Engine is inaccessible from web,
+    // but a 40 Hz burst makes the speaker cone move enough to feel through the hand.
+    const thump = ctx.createOscillator(), tg = ctx.createGain();
+    thump.type = 'sine';
+    thump.frequency.value = 40;
+    tg.gain.setValueAtTime(0.9, t0);
+    tg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.12);
+    thump.connect(tg); tg.connect(ctx.destination);
+    thump.start(t0); thump.stop(t0 + 0.12);
   } catch (e) {}
-  if (navigator.vibrate) navigator.vibrate([80, 60, 80]); // double-pulse on Android
+  if (navigator.vibrate) navigator.vibrate([80, 60, 80]); // Android fallback
 }
 
 function flashReticle() {
