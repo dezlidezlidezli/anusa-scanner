@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>ID Wedge</title>
+
+<!-- PWA / iOS home-screen -->
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ID Wedge">
+<meta name="theme-color" content="#101418">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<link rel="icon" href="./icons/icon-192.png">
+
+<style>
+  :root{
+    --ink:#101418;        /* base — unlit phone at a night event */
+    --deck:#1a2027;       /* panels */
+    --line:#2a333d;
+    --text:#e8edf2;
+    --muted:#8a97a5;
+    --hivis:#ff7a1a;      /* safety orange — reticle, primary action */
+    --tick:#3ecf8e;       /* confirmed read only */
+    --warn:#ffb020;
+    --bad:#ff5d5d;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    background:var(--ink);color:var(--text);font-family:var(--sans);
+    overflow:hidden;position:fixed;inset:0;width:100%;
+    padding-top:env(safe-area-inset-top);
+    user-select:none;-webkit-user-select:none;
+  }
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  input,select{font:inherit}
+
+  .app{display:flex;flex-direction:column;height:100%}
+
+  /* ── header ─────────────────────────────── */
+  header{
+    display:flex;align-items:center;gap:10px;
+    padding:10px 14px;background:var(--ink);border-bottom:1px solid var(--line);
+    z-index:5;
+  }
+  .wordmark{font-family:var(--mono);font-size:13px;letter-spacing:.18em;color:var(--muted)}
+  .wordmark b{color:var(--text);font-weight:600}
+  .room-chip{
+    margin-left:auto;font-family:var(--mono);font-size:12px;letter-spacing:.12em;
+    border:1px solid var(--line);border-radius:6px;padding:4px 8px;color:var(--text);
+    background:var(--deck);
+  }
+  .room-chip .lbl{color:var(--muted);margin-right:6px;font-size:10px}
+  .status{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);letter-spacing:.06em}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.ok{background:var(--tick)} .dot.wait{background:var(--warn)} .dot.err{background:var(--bad)}
+  .icon-btn{padding:6px;color:var(--muted);border-radius:8px;line-height:0}
+  .icon-btn:active{color:var(--text);background:var(--deck)}
+
+  /* ── stage (camera) ─────────────────────── */
+  .stage{position:relative;flex:1;background:#000;overflow:hidden}
+  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+
+  .reticle{
+    position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);
+    width:min(86vw,560px);aspect-ratio:5/1;
+    box-shadow:0 0 0 200vmax rgba(8,10,12,.55); /* darken outside frame */
+    border-radius:10px;pointer-events:none;
+  }
+  .reticle i{position:absolute;width:26px;height:26px;border:3px solid var(--hivis)}
+  .reticle i:nth-child(1){left:-2px;top:-2px;border-right:0;border-bottom:0;border-radius:10px 0 0 0}
+  .reticle i:nth-child(2){right:-2px;top:-2px;border-left:0;border-bottom:0;border-radius:0 10px 0 0}
+  .reticle i:nth-child(3){left:-2px;bottom:-2px;border-right:0;border-top:0;border-radius:0 0 0 10px}
+  .reticle i:nth-child(4){right:-2px;bottom:-2px;border-left:0;border-top:0;border-radius:0 0 10px 0}
+  .reticle.hit i{border-color:var(--tick)}
+  @media (prefers-reduced-motion:no-preference){
+    .reticle.hit{animation:pulse .45s ease}
+    @keyframes pulse{0%{transform:translate(-50%,-50%) scale(1)}35%{transform:translate(-50%,-50%) scale(1.04)}100%{transform:translate(-50%,-50%) scale(1)}}
+  }
+  .hint{
+    position:absolute;left:0;right:0;top:calc(38% + min(43vw,280px)*.2 + 22px);
+    text-align:center;font-size:12px;color:var(--muted);letter-spacing:.08em;pointer-events:none;
+  }
+  .cam-tools{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:8px;z-index:4}
+  .cam-tools button,.zoom-wrap{
+    background:rgba(16,20,24,.75);border:1px solid var(--line);border-radius:10px;
+    color:var(--text);padding:9px 11px;font-size:16px;backdrop-filter:blur(6px)
+  }
+  .cam-tools button.on{border-color:var(--hivis);color:var(--hivis)}
+  .zoom-wrap{display:none;align-items:center;padding:9px 8px}
+  .zoom-wrap input{width:84px;accent-color:var(--hivis)}
+
+  /* start / idle overlay */
+  .gate{
+    position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:18px;background:var(--ink);z-index:6;padding:24px;text-align:center;
+  }
+  .gate .mark{font-family:var(--mono);font-size:15px;letter-spacing:.22em;color:var(--muted)}
+  .gate p{font-size:13px;color:var(--muted);max-width:34ch;line-height:1.5}
+  .go{
+    background:var(--hivis);color:#1a1005;font-weight:700;font-size:16px;letter-spacing:.04em;
+    padding:16px 34px;border-radius:12px;
+  }
+  .go:active{transform:scale(.98)}
+  .gate .err{color:var(--bad);font-size:12px;max-width:40ch;display:none}
+
+  /* ── readout deck ────────────────────────── */
+  .deck{
+    background:var(--deck);border-top:1px solid var(--line);
+    padding:12px 16px calc(14px + env(safe-area-inset-bottom));
+    z-index:5;
+  }
+  .readout{display:flex;align-items:baseline;gap:12px;min-height:44px}
+  .readout .num{
+    font-family:var(--mono);font-size:clamp(26px,9vw,40px);font-weight:600;letter-spacing:.08em;
+    color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .readout .num.empty{color:#39434e}
+  .readout .state{font-size:12px;color:var(--muted);font-family:var(--mono);white-space:nowrap}
+  .readout .state.ok{color:var(--tick)}
+  .readout .state.warn{color:var(--warn)}
+
+  .deck-row{display:flex;gap:10px;margin-top:10px;align-items:center}
+  .deck-row .flat{
+    flex:1;text-align:center;font-size:13px;color:var(--muted);
+    border:1px solid var(--line);border-radius:10px;padding:10px 6px;letter-spacing:.04em;
+  }
+  .deck-row .flat:active{color:var(--text);background:var(--ink)}
+  .deck-row .flat.stop{color:var(--hivis);border-color:rgba(255,122,26,.45)}
+
+  /* manual entry */
+  .manual{display:none;gap:8px;margin-top:10px}
+  .manual.open{display:flex}
+  .manual input{
+    flex:1;background:var(--ink);border:1px solid var(--line);border-radius:10px;
+    color:var(--text);font-family:var(--mono);font-size:16px;padding:10px 12px;letter-spacing:.1em;
+  }
+  .manual button{background:var(--hivis);color:#1a1005;font-weight:700;border-radius:10px;padding:0 18px}
+
+  /* history */
+  .hist{margin-top:10px;display:none}
+  .hist.open{display:block}
+  .hist-head{display:flex;align-items:center;font-size:11px;color:var(--muted);letter-spacing:.1em;margin-bottom:6px}
+  .hist-head button{margin-left:auto;color:var(--muted);font-size:11px;letter-spacing:.06em;padding:2px 6px}
+  .hist ul{list-style:none;max-height:26vh;overflow-y:auto}
+  .hist li{
+    display:flex;gap:10px;align-items:center;font-family:var(--mono);font-size:14px;
+    padding:8px 2px;border-top:1px solid var(--line);
+  }
+  .hist li .t{color:var(--muted);font-size:11px}
+  .hist li .s{margin-left:auto;font-size:11px;color:var(--muted)}
+  .hist li .s.ok{color:var(--tick)}
+  .hist li:active{background:var(--ink)}
+
+  /* ── settings sheet ──────────────────────── */
+  .sheet-back{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:20;display:none}
+  .sheet-back.open{display:block}
+  .sheet{
+    position:fixed;left:0;right:0;bottom:0;z-index:21;transform:translateY(105%);
+    transition:transform .22s ease;background:var(--deck);border-top:1px solid var(--line);
+    border-radius:16px 16px 0 0;padding:18px 18px calc(20px + env(safe-area-inset-bottom));
+  }
+  @media (prefers-reduced-motion:reduce){.sheet{transition:none}}
+  .sheet.open{transform:translateY(0)}
+  .sheet h2{font-size:12px;letter-spacing:.18em;color:var(--muted);font-weight:600;margin-bottom:14px}
+  .field{margin-bottom:13px}
+  .field label{display:block;font-size:11px;color:var(--muted);letter-spacing:.08em;margin-bottom:5px}
+  .field input,.field select{
+    width:100%;background:var(--ink);border:1px solid var(--line);border-radius:10px;
+    color:var(--text);padding:11px 12px;font-family:var(--mono);font-size:15px;
+  }
+  .field .row{display:flex;gap:8px}
+  .field .row button{
+    border:1px solid var(--line);border-radius:10px;padding:0 14px;color:var(--muted);font-size:12px;letter-spacing:.06em
+  }
+  .sheet .save{
+    width:100%;background:var(--hivis);color:#1a1005;font-weight:700;font-size:15px;
+    border-radius:12px;padding:14px;margin-top:4px;
+  }
+  .sheet .note{font-size:11px;color:var(--muted);line-height:1.5;margin-top:10px}
+
+  .toast{
+    position:fixed;left:50%;bottom:calc(110px + env(safe-area-inset-bottom));transform:translateX(-50%);
+    background:var(--ink);border:1px solid var(--line);color:var(--text);
+    font-size:13px;padding:10px 16px;border-radius:10px;z-index:30;display:none;max-width:86vw;text-align:center;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="wordmark"><b>ID</b>&thinsp;WEDGE</div>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusTxt">off</span></div>
+    <button class="room-chip" id="roomChip" aria-label="Room code"><span class="lbl">ROOM</span><span id="roomTxt">——</span></button>
+    <button class="icon-btn" id="gearBtn" aria-label="Settings">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+    </button>
+  </header>
+
+  <div class="stage">
+    <video id="video" playsinline muted autoplay></video>
+
+    <div class="reticle" id="reticle"><i></i><i></i><i></i><i></i></div>
+    <div class="hint" id="hint">Point the frame at the ID number</div>
+
+    <div class="cam-tools">
+      <button id="torchBtn" style="display:none" aria-label="Torch">&#9889;</button>
+      <div class="zoom-wrap" id="zoomWrap"><input type="range" id="zoom" aria-label="Zoom"></div>
+    </div>
+
+    <div class="gate" id="gate">
+      <div class="mark">ID&thinsp;WEDGE</div>
+      <p>Camera-to-keystroke scanner. Frame the number on a student ID; each confirmed read is sent to the bridge and typed on the paired computer.</p>
+      <button class="go" id="goBtn">Start scanning</button>
+      <p class="err" id="gateErr"></p>
+    </div>
+  </div>
+
+  <div class="deck">
+    <div class="readout">
+      <div class="num empty" id="numOut">·······</div>
+      <div class="state" id="numState"></div>
+    </div>
+    <div class="deck-row">
+      <button class="flat" id="manualBtn">Type manually</button>
+      <button class="flat" id="histBtn">History</button>
+      <button class="flat stop" id="pauseBtn" style="display:none">Stop</button>
+    </div>
+    <div class="manual" id="manualRow">
+      <input id="manualIn" inputmode="numeric" autocomplete="off" placeholder="ID number">
+      <button id="manualSend">Send</button>
+    </div>
+    <div class="hist" id="hist">
+      <div class="hist-head">RECENT SCANS <button id="copyAllBtn">copy CSV</button></div>
+      <ul id="histList"></ul>
+    </div>
+  </div>
+</div>
+
+<!-- settings -->
+<div class="sheet-back" id="sheetBack"></div>
+<div class="sheet" id="sheet">
+  <h2>SETTINGS</h2>
+  <div class="field">
+    <label for="setRoom">Room code — same code pairs phone and receiver</label>
+    <div class="row">
+      <input id="setRoom" autocapitalize="characters" autocomplete="off" spellcheck="false">
+      <button id="newRoom">New</button>
+    </div>
+  </div>
+  <div class="field">
+    <label for="setDigits">Digits in the ID number</label>
+    <input id="setDigits" inputmode="numeric" type="number" min="4" max="12">
+  </div>
+  <div class="field">
+    <label for="setPrefix">Number starts with (optional — rejects misreads)</label>
+    <input id="setPrefix" inputmode="numeric" autocomplete="off" placeholder="e.g. 8">
+  </div>
+  <div class="field">
+    <label for="setMode">Output</label>
+    <select id="setMode">
+      <option value="bridge">Bridge — type on paired computer</option>
+      <option value="clip">Clipboard only — copy on this phone</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="setBroker">Relay broker (MQTT over WSS)</label>
+    <input id="setBroker" autocapitalize="off" autocomplete="off" spellcheck="false">
+  </div>
+  <button class="save" id="saveBtn">Save</button>
+  <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
+<script src="./app.js" defer></script>
+</body>
+</html>
