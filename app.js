@@ -365,8 +365,10 @@ function grabReticle() {
   rot.width  = c.height;
   rot.height = c.width;
   const rctx = rot.getContext('2d');
-  rctx.translate(rot.width, 0);
-  rctx.rotate(Math.PI / 2);
+  // 90° CCW: card held portrait (90° CW from landscape) + 90° CCW canvas = digits upright.
+  // CW would double the rotation → 180° → upside-down digits → garbled OCR.
+  rctx.translate(0, rot.height);
+  rctx.rotate(-Math.PI / 2);
   rctx.drawImage(c, 0, 0);
   return rot;
 }
