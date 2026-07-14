@@ -427,7 +427,36 @@ async function scanTick() {
       if (dbgVisible) {
         const dbg = $('#dbgCanvas');
         dbg.width = frame.width; dbg.height = frame.height;
-        dbg.getContext('2d').drawImage(frame, 0, 0);
+        const dctx = dbg.getContext('2d');
+        dctx.drawImage(frame, 0, 0);
+        // Grid overlay — 10% lines with labels so screenshots reveal exact position
+        const W = frame.width, H = frame.height;
+        dctx.font = `bold ${Math.max(9, Math.round(W * 0.06))}px monospace`;
+        dctx.textBaseline = 'top';
+        for (let pct = 10; pct < 100; pct += 10) {
+          const x = W * pct / 100, y = H * pct / 100;
+          dctx.strokeStyle = pct === 50 ? 'rgba(255,122,26,0.8)' : 'rgba(255,122,26,0.35)';
+          dctx.lineWidth = pct === 50 ? 1.5 : 0.8;
+          dctx.beginPath(); dctx.moveTo(x,0); dctx.lineTo(x,H); dctx.stroke();
+          dctx.beginPath(); dctx.moveTo(0,y); dctx.lineTo(W,y); dctx.stroke();
+          dctx.fillStyle = 'rgba(0,0,0,0.6)';
+          dctx.fillText(pct+'%', x+2, 0);
+          dctx.fillStyle = 'rgba(255,122,26,1)';
+          dctx.fillText(pct+'%', x+2, 0);
+          dctx.fillStyle = 'rgba(0,0,0,0.6)';
+          dctx.fillText(pct+'%', 2, y+1);
+          dctx.fillStyle = 'rgba(255,122,26,1)';
+          dctx.fillText(pct+'%', 2, y+1);
+        }
+        // Diagnostic: vw×vh and whether rotation fired
+        const vid = $('video'), st = vid.getBoundingClientRect();
+        const rotFired = st.height > st.width;
+        const label = `${vid.videoWidth}×${vid.videoHeight} rot:${rotFired?'YES':'NO'} out:${W}×${H}`;
+        dctx.font = `bold ${Math.max(10,Math.round(W*0.06))}px monospace`;
+        dctx.fillStyle = 'rgba(0,0,0,0.7)';
+        dctx.fillText(label, 3, H-Math.round(W*0.08)-1);
+        dctx.fillStyle = '#ff7a1a';
+        dctx.fillText(label, 2, H-Math.round(W*0.08));
       }
       const { data } = await state.worker.recognize(frame);
       const id = extractId(data.text || '', state.settings.digits, state.settings.prefix);
