@@ -386,7 +386,20 @@ function grabReticle() {
   rctx.translate(0, rot.height);
   rctx.rotate(-Math.PI / 2);
   rctx.drawImage(c, 0, 0);
-  return rot;
+
+  // Crop to student-number zone (confirmed via debug canvas: x≈55-80%, y≈65-90%
+  // of the rotated landscape canvas) and upscale for sharper Tesseract input.
+  const zx = Math.floor(rot.width  * 0.48);
+  const zy = Math.floor(rot.height * 0.58);
+  const zw = rot.width  - zx;
+  const zh = rot.height - zy;
+  const zoneH = 280;
+  const zoneW = Math.round(zw * (zoneH / zh));
+  const zone  = document.createElement('canvas');
+  zone.width  = zoneW;
+  zone.height = zoneH;
+  zone.getContext('2d').drawImage(rot, zx, zy, zw, zh, 0, 0, zoneW, zoneH);
+  return zone;
 }
 
 function extractId(text, nDigits, prefix) {
