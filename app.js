@@ -319,15 +319,21 @@ function grabReticle() {
   const dispW = vw * scale, dispH = vh * scale;
   const offX = (dispW - stage.width) / 2, offY = (dispH - stage.height) / 2;
 
-  let sx = (ret.left - stage.left + offX) / scale;
-  let sy = (ret.top - stage.top + offY) / scale;
-  let sw = ret.width / scale;
-  let sh = ret.height / scale;
+  // Restrict to the inner number zone (mirrors CSS: left:12% bottom:5% width:20% height:33%)
+  const zoneLeft   = ret.left   + ret.width  * 0.12;
+  const zoneTop    = ret.top    + ret.height * 0.62;  // 1 - 0.05 - 0.33
+  const zoneWidth  = ret.width  * 0.20;
+  const zoneHeight = ret.height * 0.33;
+
+  let sx = (zoneLeft - stage.left + offX) / scale;
+  let sy = (zoneTop  - stage.top  + offY) / scale;
+  let sw = zoneWidth  / scale;
+  let sh = zoneHeight / scale;
   sx = Math.max(0, Math.min(vw - 2, sx)); sy = Math.max(0, Math.min(vh - 2, sy));
   sw = Math.min(sw, vw - sx); sh = Math.min(sh, vh - sy);
   if (sw < 8 || sh < 8) return null;
 
-  const targetH = 340;   // portrait card capture — more height keeps the number zone legible
+  const targetH = 340;   // upscale the small number zone for legible OCR
   const targetW = Math.round(sw * (targetH / sh));
   const c = document.createElement('canvas');
   c.width = targetW; c.height = targetH;
