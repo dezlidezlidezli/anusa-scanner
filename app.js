@@ -620,7 +620,7 @@ async function scanTick() {
 }
 
 function handleRead(id) {
-  if (!id) { state.lastRead = null; return; }
+  if (!id) { return; }  // no valid N-digit read — don't reset the consecutive streak
   if (id !== state.lastRead) { state.lastRead = id; return; }
   state.lastRead = null;
 
