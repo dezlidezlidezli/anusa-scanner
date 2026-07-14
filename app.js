@@ -327,7 +327,7 @@ function grabReticle() {
   sw = Math.min(sw, vw - sx); sh = Math.min(sh, vh - sy);
   if (sw < 8 || sh < 8) return null;
 
-  const targetH = 220;   // card-size capture needs more height to keep glyphs legible
+  const targetH = 340;   // portrait card capture — more height keeps the number zone legible
   const targetW = Math.round(sw * (targetH / sh));
   const c = document.createElement('canvas');
   c.width = targetW; c.height = targetH;

@@ -68,7 +68,7 @@
 
   .reticle{
     position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);
-    width:min(84vw,420px);aspect-ratio:85.6/54;  /* ISO/IEC 7810 ID-1 — standard credit card */
+    width:min(68vw,270px);aspect-ratio:54/85.6;  /* ID-1 portrait — card held vertical, photo top-right */
     box-shadow:0 0 0 200vmax rgba(8,10,12,.52);
     border-radius:10px;pointer-events:none;
   }
@@ -77,10 +77,10 @@
     content:'';position:absolute;inset:-11px;
     border:1px dashed rgba(255,122,26,.28);border-radius:16px;pointer-events:none;
   }
-  /* inner hint — lower-left corner, where the ANU student number lives */
+  /* inner hint — lower-right corner, where the ANU student number lives */
   .reticle::after{
     content:'';position:absolute;
-    left:4%;bottom:9%;width:36%;height:30%;
+    right:5%;bottom:8%;width:36%;height:22%;
     border:1.5px dashed rgba(255,122,26,.45);border-radius:5px;pointer-events:none;
   }
   .reticle i{position:absolute;width:26px;height:26px;border:2.5px solid var(--hivis)}
@@ -95,8 +95,8 @@
   }
   .hint{
     position:absolute;left:0;right:0;
-    /* below reticle: 40% centre + half card height (≈26.5vw, max 133px) + gap */
-    top:calc(40% + min(26.5vw,133px) + 16px);
+    /* below reticle: 40% centre + half card height (portrait: ~54vw, max 214px) + gap */
+    top:calc(40% + min(54vw,214px) + 14px);
     text-align:center;font-size:12px;color:var(--muted);letter-spacing:.08em;pointer-events:none;
   }
   .cam-tools{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:8px;z-index:4}
