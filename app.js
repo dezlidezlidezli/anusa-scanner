@@ -345,7 +345,7 @@ async function initOCR() {
   if (typeof Tesseract === 'undefined') throw new Error('OCR engine failed to load — check your connection and reload.');
   setReadout('', 'loading OCR engine…', '');
   const worker = await Tesseract.createWorker('eng');
-  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_LINE) ? Tesseract.PSM.SINGLE_LINE : '7';
+  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_BLOCK) ? Tesseract.PSM.SINGLE_BLOCK : '6';
   await worker.setParameters({
     tessedit_char_whitelist: '0123456789',
     tessedit_pageseg_mode: psm,
@@ -553,11 +553,28 @@ function extractId(text, nDigits, prefix) {
 
 let dbgVisible = false;
 
+const _dbgLog = [];
+function dbgRecord(mode, rawText, candidate) {
+  if (!dbgVisible) return;
+  const willConfirm = candidate && candidate === state.lastRead;
+  const entry = `[${mode}] "${rawText.replace(/\s+/g,' ').trim().slice(0,48)}" → ${candidate||'null'} ${willConfirm?'✓CONFIRM':candidate?'(1st)':''}`;
+  _dbgLog.unshift(entry);
+  if (_dbgLog.length > 8) _dbgLog.pop();
+  const el = $('#dbgText');
+  if (el) el.textContent = _dbgLog.join('\n');
+  // Publish plaintext debug to MQTT so any subscriber can see it
+  if (state.client) {
+    try { state.client.publish(topicBase() + '/dbg', JSON.stringify({t:'dbg',mode,raw:rawText.trim().slice(0,60),id:candidate,ts:Date.now()}), {qos:0}); }
+    catch(e) {}
+  }
+}
+
 async function scanTick() {
   if (!state.scanning || state.busy || !state.workerReady) return;
   state.busy = true;
   try {
-    const frame = keystoneGrab() || grabReticle();
+    let mode = '--', frame = keystoneGrab();
+    if (frame) { mode = 'KS'; } else { frame = grabReticle(); if (frame) mode = 'RT'; }
     if (frame) {
       if (dbgVisible) {
         const dbg = $('#dbgCanvas');
@@ -595,6 +612,7 @@ async function scanTick() {
       }
       const { data } = await state.worker.recognize(frame);
       const id = extractId(data.text || '', state.settings.digits, state.settings.prefix);
+      dbgRecord(mode, data.text || '', id);
       handleRead(id);
     }
   } catch (e) { /* transient recognize errors: skip frame */ }
@@ -726,7 +744,8 @@ function wireUI() {
   $('#hint').addEventListener('click', () => {
     dbgVisible = !dbgVisible;
     $('#dbgCanvas').style.display = dbgVisible ? 'block' : 'none';
-    if (!dbgVisible) { const d = $('#dbgCanvas'); d.width = 0; }
+    $('#dbgText').style.display = dbgVisible ? 'block' : 'none';
+    if (!dbgVisible) { const d = $('#dbgCanvas'); d.width = 0; $('#dbgText').textContent = ''; }
   });
 
   $('#rescanBtn').addEventListener('click', () => {
