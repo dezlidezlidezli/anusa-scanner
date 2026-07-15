@@ -182,7 +182,9 @@
   .hist{margin-top:10px;display:none}
   .hist.open{display:block}
   .hist-head{display:flex;align-items:center;font-size:11px;color:var(--muted);letter-spacing:.1em;margin-bottom:6px}
-  .hist-head button{margin-left:auto;color:var(--muted);font-size:11px;letter-spacing:.06em;padding:2px 6px}
+  .hist-actions{margin-left:auto;display:flex;gap:6px}
+  .hist-head button{color:var(--muted);font-size:11px;letter-spacing:.06em;padding:2px 6px}
+  .hist-head button#clearHistBtn{color:var(--bad)}
   .hist ul{list-style:none;max-height:26vh;overflow-y:auto}
   .hist li{
     display:flex;gap:10px;align-items:center;font-family:var(--mono);font-size:14px;
@@ -278,7 +280,12 @@
       <button id="manualSend">Send</button>
     </div>
     <div class="hist" id="hist">
-      <div class="hist-head">RECENT SCANS <button id="copyAllBtn">copy CSV</button></div>
+      <div class="hist-head">RECENT SCANS
+        <span class="hist-actions">
+          <button id="clearHistBtn">clear</button>
+          <button id="copyAllBtn">copy CSV</button>
+        </span>
+      </div>
       <ul id="histList"></ul>
     </div>
   </div>
@@ -320,7 +327,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v2025-07-14.31</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v2025-07-14.32</p>
 </div>
 
 <div class="toast" id="toast"></div>

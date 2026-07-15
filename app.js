@@ -808,6 +808,18 @@ function wireUI() {
     try { await navigator.clipboard.writeText(historyCSV()); toast('CSV copied to clipboard'); }
     catch (e) { toast('Copy failed'); }
   });
+  $('#clearHistBtn').addEventListener('click', () => {
+    if (!state.history.length) { toast('History already empty'); return; }
+    if (!confirm('Clear all scan history? This lets the same cards be scanned fresh.')) return;
+    const n = state.history.length;
+    state.history = [];
+    persistHistory(); renderHistory();
+    // Also clear the de-dupe/suppress state so a card still in view is read cleanly again.
+    state.lastAccepted = { id: null, t: 0 };
+    state.suppressId = null;
+    $('#deleteBtn').style.display = 'none';
+    toast('Cleared ' + n + ' scan' + (n === 1 ? '' : 's'));
+  });
 }
 
 /* ────────────────────────── boot ────────────────────────────── */
