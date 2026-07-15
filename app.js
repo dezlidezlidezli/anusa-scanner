@@ -558,6 +558,51 @@ function dbgRecord(mode, rawText, candidate) {
   }
 }
 
+const _frameLog = [];
+
+function captureFrame(mode, frame, rawText, candidate) {
+  if (!dbgVisible || !frame) return;
+  _frameLog.unshift({ mode, dataUrl: frame.toDataURL('image/jpeg', 0.85),
+    w: frame.width, h: frame.height,
+    raw: (rawText || '').trim().replace(/\s+/g,' ').slice(0, 36),
+    id: candidate, ts: Date.now() });
+  if (_frameLog.length > 10) _frameLog.pop();
+}
+
+async function saveFrames() {
+  if (!_frameLog.length) { alert('No frames yet — enable debug (tap hint text) and scan first.'); return; }
+  const n = _frameLog.length;
+  const COLS = Math.min(3, n), ROWS = Math.ceil(n / COLS);
+  const FW = _frameLog[0].w, FH = _frameLog[0].h, LH = 16, PAD = 3;
+  const sheet = document.createElement('canvas');
+  sheet.width  = COLS * (FW + PAD);
+  sheet.height = ROWS * (FH + LH + PAD);
+  const ctx = sheet.getContext('2d');
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, sheet.width, sheet.height);
+  ctx.font = '11px monospace';
+  await Promise.all(_frameLog.map((f, i) => new Promise(res => {
+    const img = new Image();
+    img.onload = () => {
+      const col = i % COLS, row = Math.floor(i / COLS);
+      const x = col * (FW + PAD), y = row * (FH + LH + PAD);
+      ctx.drawImage(img, x, y, FW, FH);
+      ctx.fillStyle = f.id ? '#a8ff78' : '#ff6b6b';
+      ctx.fillText(`[${f.mode}]${f.id ? ' '+f.id : ' null'} "${f.raw}"`, x + 2, y + FH + 13);
+      res();
+    };
+    img.onerror = res;
+    img.src = f.dataUrl;
+  })));
+  const sheetUrl = sheet.toDataURL('image/jpeg', 0.88);
+  try {
+    const blob = await (await fetch(sheetUrl)).blob();
+    const file = new File([blob], `idwedge_frames_${Date.now()}.jpg`, { type: 'image/jpeg' });
+    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'ID Wedge debug frames' }); return; }
+  } catch(e) {}
+  window.open(sheetUrl); // fallback: open in tab → long-press to save
+}
+
 async function scanTick() {
   if (!state.scanning || state.busy || !state.workerReady) return;
   state.busy = true;
@@ -601,6 +646,7 @@ async function scanTick() {
       }
       const { data } = await state.worker.recognize(frame);
       const id = extractId(data.text || '', state.settings.digits, state.settings.prefix);
+      captureFrame(mode, frame, data.text || '', id);
       dbgRecord(mode, data.text || '', id);
       handleRead(id);
     }
@@ -734,7 +780,8 @@ function wireUI() {
     dbgVisible = !dbgVisible;
     $('#dbgCanvas').style.display = dbgVisible ? 'block' : 'none';
     $('#dbgText').style.display = dbgVisible ? 'block' : 'none';
-    if (!dbgVisible) { const d = $('#dbgCanvas'); d.width = 0; $('#dbgText').textContent = ''; }
+    $('#saveFramesBtn').style.display = dbgVisible ? 'block' : 'none';
+    if (!dbgVisible) { const d = $('#dbgCanvas'); d.width = 0; $('#dbgText').textContent = ''; _frameLog.length = 0; }
   });
 
   $('#rescanBtn').addEventListener('click', () => {
@@ -750,6 +797,7 @@ function wireUI() {
     sendScan(id, 'ocr');
   });
 
+  $('#saveFramesBtn').addEventListener('click', saveFrames);
   $('#histBtn').addEventListener('click', () => $('#hist').classList.toggle('open'));
   $('#copyAllBtn').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(historyCSV()); toast('CSV copied to clipboard'); }
