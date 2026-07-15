@@ -118,10 +118,13 @@ async function connectBridge() {
     if (topic !== topicBase() + '/ack') return;
     try {
       const msg = await decryptJSON(new TextDecoder().decode(payload));
-      if (msg.dev !== state.deviceId) return;
+      const own = msg.dev === state.deviceId;
+      const manual = msg.dev === 'manual';        // typed on the Mac, not scanned here
       if (msg.t === 'ack') {
-        markHistory(msg.seq, 'typed', 'ok');
-      } else if (msg.t === 'checkin') {
+        if (own) markHistory(msg.seq, 'typed', 'ok');
+        return;
+      }
+      if (msg.t === 'checkin' && (own || manual)) {
         // Receiver flipped (or couldn't flip) the student's tick on the Google Sheet.
         const map = {
           'checked-in':     ['checked in ✓',   'ok'],
@@ -131,10 +134,17 @@ async function connectBridge() {
         };
         const [txt, cls] = map[msg.status] || [msg.status, ''];
         const label = txt + (msg.name ? '  ·  ' + msg.name : '');
-        const h = state.history.find(x => x.seq === msg.seq);
-        markHistory(msg.seq, label, cls);
-        if (h && state.lastAccepted.id === h.id) setReadout(h.id, label, cls);
-        showResult(msg.status, h ? h.id : '', msg.name);
+        if (own) {
+          const h = state.history.find(x => x.seq === msg.seq);
+          markHistory(msg.seq, label, cls);
+          if (h && state.lastAccepted.id === h.id) setReadout(h.id, label, cls);
+          showResult(msg.status, h ? h.id : msg.id, msg.name);
+        } else {
+          // Manual entry on the Mac — flash + ping here even though we didn't scan it.
+          unlockAudio(); beep();
+          setReadout(msg.id, label, cls);
+          showResult(msg.status, msg.id, msg.name);
+        }
       }
     } catch (e) { /* wrong room / stray traffic */ }
   });

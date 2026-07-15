@@ -46,7 +46,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.41"   # shared version across the Mac app + web app
+VERSION        = "14.42"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
 
@@ -119,10 +119,11 @@ class Bridge:
         """Keystroke mode: tell the phone the scan was typed."""
         self._publish({"t": "ack", "seq": seq, "dev": dev})
 
-    def send_status(self, seq, dev, status, name=""):
-        """Sheet mode: report the check-in result back to the phone."""
+    def send_status(self, seq, dev, status, name="", sid=""):
+        """Sheet mode: report the check-in result back to the phone. `sid` lets the
+        phone display + flash results it never scanned itself (e.g. manual entries)."""
         self._publish({"t": "checkin", "seq": seq, "dev": dev,
-                       "status": status, "name": name})
+                       "status": status, "name": name, "id": sid})
 
     def _run(self, broker_url: str):
         u      = urlparse(broker_url)
@@ -681,7 +682,7 @@ class App:
         sub = label + (f"  ·  {name}" if name and status != "error" else "")
         self._id_sub.configure(text=f"{sub}   {ts}", fg=colour)
         self._record(ts, sid, status, data)
-        self.bridge.send_status(data.get("seq"), data.get("dev"), status, name)
+        self.bridge.send_status(data.get("seq"), data.get("dev"), status, name, sid)
 
     def _type_id(self, sid: str, ts: str) -> str:
         try:
