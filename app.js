@@ -421,6 +421,8 @@ let _rtSearchPos = 0;
 let _candR = null;           // rotation of a pending candidate awaiting confirmation
 let _candId = null;          // the candidate's 7-digit value
 let _lockLastId = null;      // previous read at the locked rotation (for 2-in-a-row)
+let _lockSentId = null;      // id already sent during the CURRENT lock session — blocks
+                             // re-sends of a lingering card WITHOUT a timer (blur-proof)
 // Give up a locked rotation after this many non-confirming SHARP frames (nulls, or junk
 // values that never reproduce). Low so a card turned to a NEW orientation is picked up
 // fast instead of being ignored while we cling to the old rotation. Tunable.
@@ -428,7 +430,7 @@ const RT_LOSE_LOCK = 3;
 
 function resetRtState() {
   _rtLocked = null; _rtFailCount = 0; _rtSearchPos = 0;
-  _candR = null; _candId = null; _lockLastId = null;
+  _candR = null; _candId = null; _lockLastId = null; _lockSentId = null;
   _focusPeak = 0; _blurSkips = 0;   // fresh sharpness baseline for the new session
   state.suppressId = null;   // fresh search — the card left / a new session began
   // Bias the search toward whichever orientation last CONFIRMED so repeat sessions
@@ -626,7 +628,10 @@ async function scanTick() {
       // card in a new orientation is picked up in ~1s instead of being ignored while we
       // cling to the old rotation.
       if (id && id === _lockLastId) {
-        handleAccept(id);
+        // Confirmed read of the locked card. Send it once per lock session: _lockSentId
+        // blocks every later read of the SAME card while it stays locked, so a card that
+        // lingers — or whose reads are spaced apart by blur skips — is never sent twice.
+        if (_lockSentId !== id) { handleAccept(id); _lockSentId = id; }
         _rtFailCount = 0;
       } else {
         _rtFailCount++;
@@ -644,6 +649,7 @@ async function scanTick() {
         localStorage.setItem('wedge.rot', String(r)); // remember the CONFIRMED rotation
         _candR = null; _candId = null;
         handleAccept(id);
+        _lockSentId = id;   // this lock session has now sent this id
       } else {
         // Candidate didn't reproduce — it was noise from a wrong orientation. Move on.
         _candR = null; _candId = null;
@@ -659,28 +665,36 @@ async function scanTick() {
   finally { state.busy = false; }
 }
 
-const DUP_WINDOW_MS = 1000;   // only de-dupe the SAME number re-read within this window
-// Called only with an id that has already been confirmed (same value read twice in a
-// row at one rotation). No history-wide de-dupe: the same card may be scanned again
-// whenever you like. We only suppress RAPID duplicates — the same number re-read within
-// DUP_WINDOW_MS (the scan loop re-reading a card sitting in the frame) — so a lingering
-// card is typed once, but re-presenting it (or any >1s gap) sends it again.
+const DUP_WINDOW_MS = 1200;   // min gap before the SAME id can be re-sent across relocks
+// A card that stays in view is sent ONCE: the lock's _lockSentId (see scanTick) blocks
+// every repeat read while the card stays locked, no matter how its reads are spaced — so
+// blur skips or a brief re-lock can't produce a duplicate. This DUP_WINDOW_MS check is only
+// a backstop for the instant a shaky card drops and re-acquires its lock: it stops the same
+// id firing twice within the window. Once a card has left the frame (lock lost), presenting
+// it again always scans fresh.
 function handleAccept(id) {
   const now = Date.now();
-  // A scan the user explicitly deleted stays ignored until a different card is read.
+  // A scan the user explicitly deleted stays ignored until the card leaves the frame.
   if (state.suppressId === id) return;
   state.suppressId = null;
-
-  if (state.lastAccepted.id === id && (now - state.lastAccepted.t) < DUP_WINDOW_MS) {
-    state.lastAccepted.t = now;   // sliding window: stay quiet while the same card lingers
-    return;
-  }
+  // Backstop against a momentary lock drop + relock of the same card.
+  if (state.lastAccepted.id === id && (now - state.lastAccepted.t) < DUP_WINDOW_MS) return;
   state.lastAccepted = { id, t: now };
 
   flashGreen(); beep(); flashReticle();
   const del = $('#deleteBtn'); del.dataset.rid = id; del.style.display = 'block';
   setReadout(id, '', '');
   sendScan(id, 'ocr');
+}
+
+// A clean de-dupe reset that does NOT disturb the rotation lock or interrupt scanning:
+// forget the last-accepted id, drop any delete-suppression, and mark whatever card is
+// currently in view as already handled for this lock — so a reset can never instantly
+// re-send it. The card rescans only after it leaves the frame and is presented again.
+function resetDedupe() {
+  state.lastAccepted = { id: null, t: 0 };
+  state.suppressId = null;
+  _lockSentId = _lockLastId;   // null when searching; the in-view id when locked
 }
 
 // Self-rescheduling loop: the next OCR fires as soon as the previous one FINISHES,
@@ -818,6 +832,7 @@ function wireUI() {
     persistHistory(); renderHistory();
     state.suppressId = id;
     state.lastAccepted = { id: null, t: 0 };
+    _lockSentId = id;   // the current lock has "handled" this id — don't let it re-send
     $('#deleteBtn').style.display = 'none';
     setReadout('', 'deleted', 'warn');
     toast('Deleted ' + id);
@@ -831,13 +846,11 @@ function wireUI() {
   });
   $('#clearHistBtn').addEventListener('click', () => {
     if (!state.history.length) { toast('History already empty'); return; }
-    if (!confirm('Clear all scan history? This lets the same cards be scanned fresh.')) return;
+    if (!confirm('Clear all scan history? Re-present a card to scan it again.')) return;
     const n = state.history.length;
     state.history = [];
     persistHistory(); renderHistory();
-    // Also clear the de-dupe/suppress state so a card still in view is read cleanly again.
-    state.lastAccepted = { id: null, t: 0 };
-    state.suppressId = null;
+    resetDedupe();   // clean slate; keeps scanning alive and won't re-add the in-view card
     $('#deleteBtn').style.display = 'none';
     toast('Cleared ' + n + ' scan' + (n === 1 ? '' : 's'));
   });
