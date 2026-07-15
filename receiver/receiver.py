@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ID Wedge receiver — run this on the computer that should receive the keystrokes.
+ANUSA Scanner receiver — run this on the computer that should receive the keystrokes.
 
 It joins the same room as the phone app, decrypts each scan, and types the ID
 number into whatever window/field currently has focus (i.e. it behaves like a
@@ -83,7 +83,7 @@ class Typer:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="ID Wedge receiver — types scans from the phone app")
+    ap = argparse.ArgumentParser(description="ANUSA Scanner receiver — types scans from the phone app")
     ap.add_argument("--room", required=True, help="room code shown in the phone app")
     ap.add_argument("--broker", default=DEFAULT_BROKER, help=f"MQTT-over-websockets URL (default {DEFAULT_BROKER})")
     ap.add_argument("--suffix", choices=["enter", "tab", "none"], default="enter",

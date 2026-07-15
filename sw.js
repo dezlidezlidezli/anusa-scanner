@@ -1,9 +1,9 @@
 'use strict';
-/* ID Wedge service worker — cache-first app shell plus runtime caching of the
+/* ANUSA Scanner service worker — cache-first app shell plus runtime caching of the
    CDN-hosted OCR/relay libraries (tesseract core + traineddata are several MB;
    after the first online load the app starts instantly). */
 
-const VERSION = 'wedge-v14-36';
+const VERSION = 'anusa-scanner-v14-36';
 const CORE = [
   './',
   './index.html',

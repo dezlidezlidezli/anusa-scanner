@@ -1,7 +1,7 @@
 {
-  "name": "ID Wedge",
-  "short_name": "ID Wedge",
-  "description": "Camera-to-keystroke scanner for ID numbers",
+  "name": "ANUSA Scanner",
+  "short_name": "ANUSA Scan",
+  "description": "Camera-to-keystroke scanner for ANU student numbers",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

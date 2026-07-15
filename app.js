@@ -1,5 +1,5 @@
 'use strict';
-/* ID Wedge — camera → OCR → encrypted relay → keystrokes on the paired computer.
+/* ANUSA Scanner — camera → OCR → encrypted relay → keystrokes on the paired computer.
    Runs entirely as a static page (GitHub Pages friendly). */
 
 const $ = (s) => document.querySelector(s);
@@ -514,7 +514,7 @@ async function saveFrames() {
   try {
     const blob = await (await fetch(sheetUrl)).blob();
     const file = new File([blob], `idwedge_frames_${Date.now()}.jpg`, { type: 'image/jpeg' });
-    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'ID Wedge debug frames' }); return; }
+    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'ANUSA Scanner debug frames' }); return; }
   } catch(e) {}
   window.open(sheetUrl); // fallback: open in tab → long-press to save
 }

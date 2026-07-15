@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ID Wedge — macOS receiver app.
+ANUSA Scanner — macOS receiver app.
 
 Drag to Applications, grant Accessibility permission when prompted,
 enter the room code from the phone app, and click Connect.
@@ -43,7 +43,7 @@ except ImportError:
 
 VERSION        = "1.0"
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
-LOG_PATH       = Path.home() / "Documents" / "IDWedge_scans.csv"
+LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
 
 # PWA colour palette so the app feels like the same product
 C = dict(
@@ -187,7 +187,7 @@ class App:
         self._hist_rows  = []     # [{ts, id, mode, seq, dev}]
         self._app_focused = False
 
-        root.title("ID Wedge")
+        root.title("ANUSA Scanner")
         root.configure(bg=C["bg"])
         root.resizable(False, False)
         root.geometry("440x570")
@@ -219,9 +219,9 @@ class App:
         # ── Header ────────────────────────────────────────────────────────────
         hdr = tk.Frame(r, bg=C["bg"])
         hdr.pack(fill="x", padx=18, pady=(16, 12))
-        tk.Label(hdr, text="ID", font=("Menlo", 15, "bold"),
+        tk.Label(hdr, text="ANUSA", font=("Menlo", 15, "bold"),
                  bg=C["bg"], fg=C["text"]).pack(side="left")
-        tk.Label(hdr, text=" WEDGE  RECEIVER", font=("Menlo", 15),
+        tk.Label(hdr, text=" SCANNER  RECEIVER", font=("Menlo", 15),
                  bg=C["bg"], fg=C["muted"]).pack(side="left")
         tk.Label(hdr, text=f"v{VERSION}", font=("Menlo", 10),
                  bg=C["bg"], fg=C["line"]).pack(side="right")
