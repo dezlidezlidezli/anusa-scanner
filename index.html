@@ -229,10 +229,28 @@
     background:var(--ink);border:1px solid var(--line);color:var(--text);
     font-size:13px;padding:10px 16px;border-radius:10px;z-index:30;display:none;max-width:86vw;text-align:center;
   }
+  /* full-screen check-in result — big and unmistakable across the room */
+  #result{position:fixed;inset:0;z-index:10000;display:none;flex-direction:column;
+    align-items:center;justify-content:center;gap:1.2vh;padding:6vw;text-align:center;
+    pointer-events:none;opacity:0;transition:opacity .14s ease-out}
+  #result.show{opacity:1}
+  #result .glyph{font-size:38vw;line-height:.85;font-weight:800}
+  #result .word{font-size:9.5vw;font-weight:800;letter-spacing:.03em}
+  #result .num{font-size:7vw;font-weight:700;font-family:var(--mono);opacity:.9}
+  #result .who{font-size:5vw;font-family:var(--mono);opacity:.8;word-break:break-word}
+  #result.ok{background:var(--tick);color:#052018}
+  #result.warn{background:var(--warn);color:#2b1c00}
+  #result.bad{background:var(--bad);color:#2c0707}
 </style>
 </head>
 <body>
 <div id="successFlash" style="display:none;position:fixed;inset:0;background:rgba(52,199,89,0.65);z-index:9999;pointer-events:none;"></div>
+<div id="result" aria-hidden="true">
+  <div class="glyph"></div>
+  <div class="word"></div>
+  <div class="num"></div>
+  <div class="who"></div>
+</div>
 <div class="app">
 
   <header>
@@ -272,23 +290,8 @@
       <div class="state" id="numState"></div>
     </div>
     <div class="deck-row">
-      <button class="flat" id="manualBtn">Type manually</button>
-      <button class="flat" id="histBtn">History</button>
       <button class="flat stop" id="deleteBtn" style="display:none">Delete</button>
       <button class="flat stop" id="pauseBtn" style="display:none">Stop</button>
-    </div>
-    <div class="manual" id="manualRow">
-      <input id="manualIn" inputmode="numeric" autocomplete="off" placeholder="ID number">
-      <button id="manualSend">Send</button>
-    </div>
-    <div class="hist" id="hist">
-      <div class="hist-head">RECENT SCANS
-        <span class="hist-actions">
-          <button id="clearHistBtn">clear</button>
-          <button id="copyAllBtn">copy CSV</button>
-        </span>
-      </div>
-      <ul id="histList"></ul>
     </div>
   </div>
 </div>
@@ -329,7 +332,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v2025-07-14.38</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.41</p>
 </div>
 
 <div class="toast" id="toast"></div>

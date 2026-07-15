@@ -234,29 +234,45 @@ class SheetSession:
         self.name_i = resolve_col(self.headers, name_col) if name_col else None
 
     def check_in(self, student):
-        """Flip this student's tick FALSE→TRUE. Returns a status dict. Raises on API error."""
+        """Flip this student's tick FALSE→TRUE. A student is ONE person even if they
+        appear in several rows (one registration per student), so every matching row is
+        ticked together. Returns a status dict. Raises on API error."""
         with self._lock:
             if self.id_i is None or self.tick_i is None:
                 raise RuntimeError("columns not set")
             target = normalize(student)
             if not target:
-                return {"status": "not-registered", "name": "", "row": None}
-            row = self._find(target)
-            if row is None:
+                return {"status": "not-registered", "name": "", "row": None, "rows": []}
+            rows = self._find_all(target)
+            if not rows:
                 self._reload_locked()          # maybe rows were added since load
-                row = self._find(target)
-            if row is None:
-                return {"status": "not-registered", "name": "", "row": None}
-            name = self._cell(row, self.name_i) if self.name_i is not None else ""
-            cur = str(self._cell(row, self.tick_i)).strip().upper()
-            if cur in TRUE_SET:
-                return {"status": "already", "name": name, "row": row + 1}
-            rng = f"'{self.tab}'!{col_letter(self.tick_i)}{row + 1}"
-            self.svc.spreadsheets().values().update(
-                spreadsheetId=self.sid, range=rng, valueInputOption="USER_ENTERED",
-                body={"values": [["TRUE"]]}).execute()
-            self._set_cell(row, self.tick_i, "TRUE")   # keep local cache in sync
-            return {"status": "checked-in", "name": name, "row": row + 1}
+                rows = self._find_all(target)
+            if not rows:
+                return {"status": "not-registered", "name": "", "row": None, "rows": []}
+
+            name = ""
+            if self.name_i is not None:
+                for r in rows:
+                    n = self._cell(r, self.name_i)
+                    if n:
+                        name = n
+                        break
+
+            sheet_rows = [r + 1 for r in rows]
+            to_tick = [r for r in rows
+                       if str(self._cell(r, self.tick_i)).strip().upper() not in TRUE_SET]
+            if not to_tick:
+                return {"status": "already", "name": name,
+                        "row": sheet_rows[0], "rows": sheet_rows}
+
+            for r in to_tick:
+                rng = f"'{self.tab}'!{col_letter(self.tick_i)}{r + 1}"
+                self.svc.spreadsheets().values().update(
+                    spreadsheetId=self.sid, range=rng, valueInputOption="USER_ENTERED",
+                    body={"values": [["TRUE"]]}).execute()
+                self._set_cell(r, self.tick_i, "TRUE")   # keep local cache in sync
+            return {"status": "checked-in", "name": name,
+                    "row": (to_tick[0] + 1), "rows": sheet_rows}
 
     def refresh(self):
         with self._lock:
@@ -268,11 +284,9 @@ class SheetSession:
             spreadsheetId=self.sid, range=f"'{self.tab}'").execute().get("values", [])
         self.headers = self.values[0] if self.values else []
 
-    def _find(self, target):
-        for r in range(1, len(self.values)):
-            if normalize(self._cell(r, self.id_i)) == target:
-                return r
-        return None
+    def _find_all(self, target):
+        return [r for r in range(1, len(self.values))
+                if normalize(self._cell(r, self.id_i)) == target]
 
     @staticmethod
     def _cell_row(row, i):

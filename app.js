@@ -134,6 +134,7 @@ async function connectBridge() {
         const h = state.history.find(x => x.seq === msg.seq);
         markHistory(msg.seq, label, cls);
         if (h && state.lastAccepted.id === h.id) setReadout(h.id, label, cls);
+        showResult(msg.status, h ? h.id : '', msg.name);
       }
     } catch (e) { /* wrong room / stray traffic */ }
   });
@@ -185,6 +186,7 @@ function markHistory(seq, status, cls) {
 
 function renderHistory() {
   const ul = $('#histList');
+  if (!ul) return;   // history UI lives on the Mac receiver, not the phone
   ul.innerHTML = '';
   for (const h of state.history.slice(0, 40)) {
     const li = document.createElement('li');
@@ -209,9 +211,13 @@ function historyCSV() {
 
 /* ────────────────────────── readout / feedback ──────────────── */
 
+// Student numbers are shown with a leading 'u' (how they're used day-to-day) even
+// though we OCR / send / match on the bare digits.
+function uDisp(id) { return id ? 'u' + id : ''; }
+
 function setReadout(id, stateTxt, cls) {
   const n = $('#numOut');
-  n.textContent = id || '·······';
+  n.textContent = id ? uDisp(id) : '·······';
   n.classList.toggle('empty', !id);
   const st = $('#numState');
   st.textContent = stateTxt || '';
@@ -356,6 +362,32 @@ function greyscaleStretch(canvas) {
   }
   ctx.putImageData(img, 0, 0);
   return canvas;
+}
+
+// Full-screen, colour-coded check-in result: green ✓ / orange ↺ / red ✕.
+// Non-blocking (pointer-events:none) so scanning keeps running underneath.
+const RESULT_MS = 1400;
+function showResult(status, id, name) {
+  const map = {
+    'checked-in':     ['ok',   '✓', 'CHECKED IN'],
+    'already':        ['warn', '↺', 'ALREADY IN'],
+    'not-registered': ['bad',  '✕', 'NOT REGISTERED'],
+    'error':          ['bad',  '⚠', 'SHEET ERROR'],
+  };
+  const [cls, glyph, word] = map[status] || ['', '', status];
+  const el = $('#result');
+  el.className = cls;
+  el.querySelector('.glyph').textContent = glyph;
+  el.querySelector('.word').textContent  = word;
+  el.querySelector('.num').textContent   = uDisp(id);
+  el.querySelector('.who').textContent   = name || '';
+  el.style.display = 'flex';
+  requestAnimationFrame(() => el.classList.add('show'));
+  clearTimeout(showResult._t);
+  showResult._t = setTimeout(() => {
+    el.classList.remove('show');
+    setTimeout(() => { el.style.display = 'none'; }, 200);
+  }, RESULT_MS);
 }
 
 function flashGreen() {
@@ -817,20 +849,6 @@ function wireUI() {
   $('#saveBtn').addEventListener('click', onSave);
   $('#newRoom').addEventListener('click', () => { $('#setRoom').value = randomRoom(); });
 
-  $('#manualBtn').addEventListener('click', () => {
-    $('#manualRow').classList.toggle('open');
-    if ($('#manualRow').classList.contains('open')) $('#manualIn').focus();
-  });
-  $('#manualSend').addEventListener('click', () => {
-    const v = ($('#manualIn').value.match(/\d+/g) || []).join('');
-    if (!v) return;
-    $('#manualIn').value = '';
-    unlockAudio(); beep();
-    setReadout(v, '', '');
-    state.lastAccepted = { id: v, t: Date.now() };
-    sendScan(v, 'manual');
-  });
-
   $('#hint').addEventListener('click', () => {
     dbgVisible = !dbgVisible;
     $('#dbgCanvas').style.display = dbgVisible ? 'block' : 'none';
@@ -855,21 +873,6 @@ function wireUI() {
   });
 
   $('#saveFramesBtn').addEventListener('click', saveFrames);
-  $('#histBtn').addEventListener('click', () => $('#hist').classList.toggle('open'));
-  $('#copyAllBtn').addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(historyCSV()); toast('CSV copied to clipboard'); }
-    catch (e) { toast('Copy failed'); }
-  });
-  $('#clearHistBtn').addEventListener('click', () => {
-    if (!state.history.length) { toast('History already empty'); return; }
-    if (!confirm('Clear all scan history? Re-present a card to scan it again.')) return;
-    const n = state.history.length;
-    state.history = [];
-    persistHistory(); renderHistory();
-    resetDedupe();   // clean slate; keeps scanning alive and won't re-add the in-view card
-    $('#deleteBtn').style.display = 'none';
-    toast('Cleared ' + n + ' scan' + (n === 1 ? '' : 's'));
-  });
 }
 
 /* ────────────────────────── boot ────────────────────────────── */

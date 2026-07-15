@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from tkinter import filedialog
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -45,7 +46,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "1.1"
+VERSION        = "14.41"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
 
@@ -213,6 +214,7 @@ class App:
             pass
 
         self._build_ui()
+        self._recompute_geometry()
         self._poll_queue()
         self._poll_focus()
 
@@ -223,8 +225,8 @@ class App:
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
-    def _sep(self):
-        tk.Frame(self.root, height=1, bg=C["line"]).pack(fill="x")
+    def _sep(self, parent=None):
+        tk.Frame(parent or self.root, height=1, bg=C["line"]).pack(fill="x")
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -242,62 +244,23 @@ class App:
                  bg=C["bg"], fg=C["line"]).pack(side="right")
         self._sep()
 
-        # ── Connection section ────────────────────────────────────────────────
-        conn_bg = tk.Frame(r, bg=C["deck"])
-        conn_bg.pack(fill="x")
-        conn = tk.Frame(conn_bg, bg=C["deck"])
-        conn.pack(fill="x", padx=18, pady=14)
+        # ── Setup (collapsible: connection + on-scan target) ─────────────────
+        self._setup_hdr = tk.Frame(r, bg=C["bg"])
+        self._setup_hdr.pack(fill="x", padx=18, pady=(8, 2))
+        self._setup_toggle = tk.Label(
+            self._setup_hdr, text="▾ SETUP", font=("Menlo", 9, "bold"),
+            bg=C["bg"], fg=C["muted"], cursor="hand2")
+        self._setup_toggle.pack(side="left")
+        self._setup_toggle.bind("<Button-1>", lambda _: self._toggle_setup())
+        self._setup_summary = tk.Label(self._setup_hdr, text="", font=("Menlo", 9),
+                                       bg=C["bg"], fg=C["line"])
+        self._setup_summary.pack(side="right")
 
-        tk.Label(conn, text="ROOM CODE", font=("Menlo", 9),
-                 bg=C["deck"], fg=C["muted"]).pack(anchor="w")
-
-        room_row = tk.Frame(conn, bg=C["deck"])
-        room_row.pack(fill="x", pady=(4, 10))
-
-        self._room_var = tk.StringVar()
-        self._room_var.trace_add("write", self._auto_upper)
-        room_entry = tk.Entry(
-            room_row,
-            textvariable=self._room_var,
-            font=("Menlo", 20), width=8,
-            bg=C["bg"], fg=C["text"],
-            insertbackground=C["text"],
-            relief="flat",
-            highlightthickness=1,
-            highlightbackground=C["line"],
-            highlightcolor=C["orange"],
-        )
-        room_entry.pack(side="left", ipady=6, padx=(0, 10))
-        room_entry.bind("<Return>", lambda _: self._toggle_connect())
-
-        self._conn_btn = tk.Button(
-            room_row,
-            text="Connect",
-            font=("Menlo", 13, "bold"),
-            bg=C["orange"], fg="#1a1005",
-            activebackground="#e06910", activeforeground="#1a1005",
-            relief="flat", cursor="hand2",
-            padx=16, pady=6,
-            command=self._toggle_connect,
-        )
-        self._conn_btn.pack(side="left")
-
-        tk.Label(conn, text="BROKER", font=("Menlo", 9),
-                 bg=C["deck"], fg=C["muted"]).pack(anchor="w")
-        self._broker_var = tk.StringVar(value=DEFAULT_BROKER)
-        tk.Entry(
-            conn,
-            textvariable=self._broker_var,
-            font=("Menlo", 10), bg=C["bg"], fg=C["muted"],
-            insertbackground=C["text"], relief="flat",
-            highlightthickness=1, highlightbackground=C["line"],
-            highlightcolor=C["orange"],
-        ).pack(fill="x", ipady=3, pady=(4, 0))
-
-        self._sep()
-
-        # ── Target mode (keystrokes vs Google Sheet) ─────────────────────────
-        self._build_mode_section(r)
+        self._setup_body = tk.Frame(r, bg=C["bg"])
+        self._setup_body.pack(fill="x")
+        self._build_connection(self._setup_body)
+        self._sep(self._setup_body)
+        self._build_mode_section(self._setup_body)
         self._sep()
 
         # ── Status row ────────────────────────────────────────────────────────
@@ -336,16 +299,33 @@ class App:
         self._id_sub.pack()
         self._sep()
 
+        # ── Manual entry (type an ID here when a card won't scan) ─────────────
+        man = tk.Frame(r, bg=C["bg"])
+        man.pack(fill="x", padx=18, pady=(8, 6))
+        tk.Label(man, text="MANUAL", font=("Menlo", 9),
+                 bg=C["bg"], fg=C["muted"]).pack(side="left", padx=(0, 8))
+        self._manual_var = tk.StringVar()
+        me = tk.Entry(man, textvariable=self._manual_var, font=("Menlo", 14),
+                      bg=C["bg"], fg=C["text"], insertbackground=C["text"], relief="flat",
+                      highlightthickness=1, highlightbackground=C["line"],
+                      highlightcolor=C["orange"])
+        me.pack(side="left", fill="x", expand=True, ipady=4)
+        me.bind("<Return>", lambda _: self._manual_submit())
+        tk.Button(man, text="Enter", font=("Menlo", 12, "bold"), bg=C["orange"],
+                  fg="#1a1005", activebackground="#e06910", relief="flat", cursor="hand2",
+                  padx=14, pady=4, command=self._manual_submit).pack(side="left", padx=(8, 0))
+        self._sep()
+
         # ── History ───────────────────────────────────────────────────────────
         hist_hdr = tk.Frame(r, bg=C["bg"])
         hist_hdr.pack(fill="x", padx=18, pady=(8, 4))
         tk.Label(hist_hdr, text="RECENT SCANS", font=("Menlo", 9),
                  bg=C["bg"], fg=C["muted"]).pack(side="left")
         tk.Button(
-            hist_hdr, text="copy CSV",
+            hist_hdr, text="download CSV",
             font=("Menlo", 9), bg=C["bg"], fg=C["muted"],
             activebackground=C["deck"], relief="flat", cursor="hand2",
-            command=self._copy_csv,
+            command=self._download_csv,
         ).pack(side="right")
 
         self._hist_box = tk.Listbox(
@@ -355,6 +335,39 @@ class App:
             highlightthickness=0, height=5,
         )
         self._hist_box.pack(fill="x", padx=18, pady=(0, 16))
+
+    def _build_connection(self, parent):
+        conn_bg = tk.Frame(parent, bg=C["deck"])
+        conn_bg.pack(fill="x")
+        conn = tk.Frame(conn_bg, bg=C["deck"])
+        conn.pack(fill="x", padx=18, pady=14)
+
+        tk.Label(conn, text="ROOM CODE", font=("Menlo", 9),
+                 bg=C["deck"], fg=C["muted"]).pack(anchor="w")
+        room_row = tk.Frame(conn, bg=C["deck"])
+        room_row.pack(fill="x", pady=(4, 10))
+        self._room_var = tk.StringVar()
+        self._room_var.trace_add("write", self._auto_upper)
+        room_entry = tk.Entry(
+            room_row, textvariable=self._room_var, font=("Menlo", 20), width=8,
+            bg=C["bg"], fg=C["text"], insertbackground=C["text"], relief="flat",
+            highlightthickness=1, highlightbackground=C["line"], highlightcolor=C["orange"])
+        room_entry.pack(side="left", ipady=6, padx=(0, 10))
+        room_entry.bind("<Return>", lambda _: self._toggle_connect())
+        self._conn_btn = tk.Button(
+            room_row, text="Connect", font=("Menlo", 13, "bold"), bg=C["orange"],
+            fg="#1a1005", activebackground="#e06910", activeforeground="#1a1005",
+            relief="flat", cursor="hand2", padx=16, pady=6, command=self._toggle_connect)
+        self._conn_btn.pack(side="left")
+
+        tk.Label(conn, text="BROKER", font=("Menlo", 9),
+                 bg=C["deck"], fg=C["muted"]).pack(anchor="w")
+        self._broker_var = tk.StringVar(value=DEFAULT_BROKER)
+        tk.Entry(
+            conn, textvariable=self._broker_var, font=("Menlo", 10), bg=C["bg"],
+            fg=C["muted"], insertbackground=C["text"], relief="flat", highlightthickness=1,
+            highlightbackground=C["line"], highlightcolor=C["orange"]).pack(
+                fill="x", ipady=3, pady=(4, 0))
 
     def _build_mode_section(self, r):
         mode_bg = tk.Frame(r, bg=C["deck"])
@@ -426,9 +439,17 @@ class App:
         for v in self._col_vars.values():
             v.trace_add("write", lambda *_: self._apply_columns())
 
-        self._sheet_status = tk.Label(sp, text="sign in, then load a sheet",
-                                      font=("Menlo", 10), bg=C["deck"], fg=C["muted"])
-        self._sheet_status.pack(anchor="w", pady=(6, 0))
+        status_row = tk.Frame(sp, bg=C["deck"])
+        status_row.pack(fill="x", pady=(6, 0))
+        self._sheet_status = tk.Label(status_row, text="sign in, then load a sheet",
+                                      font=("Menlo", 10), bg=C["deck"], fg=C["muted"],
+                                      anchor="w", justify="left")
+        self._sheet_status.pack(side="left", fill="x", expand=True)
+        self._sync_btn = tk.Button(
+            status_row, text="↻ Re-sync", font=("Menlo", 10), bg=C["line"], fg=C["text"],
+            activebackground=C["deck"], relief="flat", cursor="hand2", padx=8, pady=2,
+            command=self._sync)
+        self._sync_btn.pack(side="right")
 
     # ── Focus polling (test-mode banner is keystroke-mode only) ───────────────
 
@@ -457,11 +478,36 @@ class App:
     def _on_mode_change(self):
         if self._mode_var.get() == "sheet":
             self._sheet_wrap.pack(fill="x")
-            self.root.geometry("460x840")
         else:
             self._sheet_wrap.pack_forget()
-            self.root.geometry("460x620")
+        self._recompute_geometry()
         self._update_banner(self._app_focused)
+
+    def _toggle_setup(self):
+        if self._setup_body.winfo_ismapped():
+            self._setup_body.pack_forget()
+            self._setup_toggle.configure(text="▸ SETUP")
+            self._update_setup_summary()
+        else:
+            self._setup_body.pack(fill="x", after=self._setup_hdr)
+            self._setup_toggle.configure(text="▾ SETUP")
+            self._setup_summary.configure(text="")
+        self._recompute_geometry()
+
+    def _update_setup_summary(self):
+        room = self._room_var.get().strip() or "—"
+        mode = "Sheet" if self._mode_var.get() == "sheet" else "Keys"
+        conn = "●" if self._connected else "○"
+        self._setup_summary.configure(text=f"{conn} {room} · {mode}")
+
+    def _recompute_geometry(self):
+        if not self._setup_body.winfo_ismapped():
+            h = 490
+        elif self._mode_var.get() == "sheet":
+            h = 915
+        else:
+            h = 695
+        self.root.geometry(f"460x{h}")
 
     # ── Connection ────────────────────────────────────────────────────────────
 
@@ -487,6 +533,8 @@ class App:
             self.bridge.stop()
             self._conn_btn.configure(text="Connect")
             self._set_status("off", "not connected")
+        if not self._setup_body.winfo_ismapped():
+            self._update_setup_summary()
 
     def _set_status(self, kind: str, text: str):
         col = {"ok": C["green"], "wait": C["amber"],
@@ -531,6 +579,23 @@ class App:
         except Exception as e:
             self.q.put(("sheet_error", str(e)))
 
+    def _sync(self):
+        """Re-read the sheet so ticks set elsewhere (other stations / manual edits)
+        are reflected, without losing the loaded columns."""
+        if not self._sheet or self._sheet.sid is None:
+            self._sheet_status.configure(text="load a sheet first", fg=C["amber"])
+            return
+        self._sheet_status.configure(text="re-syncing…", fg=C["amber"])
+        self._sync_btn.configure(state="disabled")
+        threading.Thread(target=self._do_sync, daemon=True).start()
+
+    def _do_sync(self):
+        try:
+            self._sheet.refresh()
+            self.q.put(("sheet_synced", self._sheet.tab, max(0, len(self._sheet.values) - 1)))
+        except Exception as e:
+            self.q.put(("sheet_error", str(e)))
+
     def _populate_columns(self, headers, guess):
         id_g, tick_g, name_g = guess
         self._fill_menu("id", headers, id_g or (headers[0] if headers else ""))
@@ -568,9 +633,17 @@ class App:
 
     # ── Scan handling ─────────────────────────────────────────────────────────
 
+    def _manual_submit(self):
+        """Process a hand-typed ID exactly like a scan (check-in or keystroke)."""
+        sid = "".join(ch for ch in self._manual_var.get() if ch.isdigit())
+        if not sid:
+            return
+        self._manual_var.set("")
+        self._handle_scan({"seq": None, "dev": "manual"}, sid)
+
     def _handle_scan(self, data: dict, sid: str):
         ts = datetime.now().strftime("%H:%M:%S")
-        self._id_lbl.configure(text=sid, fg=C["text"])
+        self._id_lbl.configure(text="u" + sid, fg=C["text"])
 
         if self._mode_var.get() == "sheet":
             if not self._sheet_ready:
@@ -640,7 +713,7 @@ class App:
     def _record(self, ts: str, sid: str, label: str, data: dict):
         icon = {"typed": "✓", "test": "◉", "checked-in": "✓", "already": "•",
                 "not-registered": "✗", "error": "✗"}.get(label, "?")
-        self._hist_box.insert(0, f"  {ts}    {sid}    {icon} {label}")
+        self._hist_box.insert(0, f"  {ts}    u{sid}    {icon} {label}")
         if self._hist_box.size() > 50:
             self._hist_box.delete(50)
         self._hist_rows.insert(0, {
@@ -660,18 +733,27 @@ class App:
         except Exception:
             pass
 
-    def _copy_csv(self):
+    def _download_csv(self):
+        if not self._hist_rows:
+            self._id_sub.configure(text="no scans to download yet", fg=C["amber"])
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            initialfile=f"anusa_scans_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            filetypes=[("CSV files", "*.csv")], title="Download scans CSV")
+        if not path:
+            return
         rows = ["timestamp,id,result,device,seq"]
         for h in reversed(self._hist_rows):
             rows.append(
-                f"{h['ts']},{h['id']},{h['mode']},"
-                f"{h.get('dev','')},{h.get('seq','')}"
-            )
+                f"{h['ts']},{h['id']},{h['mode']},{h.get('dev','')},{h.get('seq','')}")
         try:
-            self.root.clipboard_clear()
-            self.root.clipboard_append("\n".join(rows))
-        except Exception:
-            pass
+            with open(path, "w", newline="") as f:
+                f.write("\n".join(rows) + "\n")
+            self._id_sub.configure(
+                text=f"saved CSV · {len(self._hist_rows)} rows", fg=C["green"])
+        except Exception as e:
+            self._id_sub.configure(text=f"CSV save failed: {e}", fg=C["red"])
 
     # ── Main loop bridge ──────────────────────────────────────────────────────
 
@@ -691,9 +773,14 @@ class App:
                 elif kind == "sheet_loaded":
                     self._load_btn.configure(state="normal")
                     self._populate_columns(ev[1]["headers"], ev[2])
+                elif kind == "sheet_synced":
+                    self._sync_btn.configure(state="normal")
+                    self._sheet_status.configure(
+                        text=f"re-synced · {ev[1]} · {ev[2]} rows", fg=C["green"])
                 elif kind == "sheet_error":
                     self._load_btn.configure(state="normal")
-                    self._sheet_status.configure(text=f"load failed: {ev[1][:44]}",
+                    self._sync_btn.configure(state="normal")
+                    self._sheet_status.configure(text=f"failed: {ev[1][:44]}",
                                                  fg=C["red"])
         except queue.Empty:
             pass
