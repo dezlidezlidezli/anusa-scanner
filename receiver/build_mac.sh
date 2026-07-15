@@ -12,7 +12,7 @@ echo ""
 
 # ── 1. Install build deps ─────────────────────────────────────────────────────
 echo "→ Installing dependencies…"
-pip install --quiet paho-mqtt cryptography pynput pyinstaller pillow \
+pip install --quiet paho-mqtt cryptography pynput pyinstaller pillow qrcode \
     google-api-python-client google-auth-oauthlib google-auth-httplib2
 
 # ── 2. App icon ───────────────────────────────────────────────────────────────
@@ -44,6 +44,7 @@ pyinstaller \
     --collect-all google_auth_oauthlib \
     --collect-submodules google.auth \
     --collect-submodules google.oauth2 \
+    --collect-submodules qrcode \
     --hidden-import google_auth_httplib2 \
     "${CREDS_FLAG[@]}" \
     wedge_app.py

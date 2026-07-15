@@ -134,14 +134,16 @@ async function connectBridge() {
         };
         const [txt, cls] = map[msg.status] || [msg.status, ''];
         const label = txt + (msg.name ? '  ·  ' + msg.name : '');
+        // The confirm/warn/fail sound plays HERE — on the check-in result (sheet mode) —
+        // not on the raw scan. Keystroke mode sends 'ack', never 'checkin', so it's silent.
+        unlockAudio(); resultSound(msg.status);
         if (own) {
           const h = state.history.find(x => x.seq === msg.seq);
           markHistory(msg.seq, label, cls);
           if (h && state.lastAccepted.id === h.id) setReadout(h.id, label, cls);
           showResult(msg.status, h ? h.id : msg.id, msg.name);
         } else {
-          // Manual entry on the Mac — flash + ping here even though we didn't scan it.
-          unlockAudio(); beep();
+          // Manual entry on the Mac — flash here even though we didn't scan it.
           setReadout(msg.id, label, cls);
           showResult(msg.status, msg.id, msg.name);
         }
@@ -250,37 +252,37 @@ function unlockAudio() {
   } catch (e) {}
 }
 
-function beep() {
+// Play a short sequence of notes. (No sub-bass thump — removed.)
+function tone(notes, type = 'triangle', gain = 0.2, dur = 0.19) {
   if (!state.audio) return;
   try {
-    const ctx = state.audio;
-    const t0 = ctx.currentTime;
-
-    // Success chime: two quick ascending notes (G5 → D6) with a soft attack — reads
-    // clearly as "got it", played alongside the green flash.
-    for (const [freq, dt] of [[784, 0], [1175, 0.085]]) {
+    const ctx = state.audio, t0 = ctx.currentTime;
+    for (const [freq, dt] of notes) {
       const osc = ctx.createOscillator(), g = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.value = freq;
+      osc.type = type; osc.frequency.value = freq;
       const s = t0 + dt;
       g.gain.setValueAtTime(0.0001, s);
-      g.gain.exponentialRampToValueAtTime(0.2, s + 0.012);
-      g.gain.exponentialRampToValueAtTime(0.0001, s + 0.19);
+      g.gain.exponentialRampToValueAtTime(gain, s + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, s + dur);
       osc.connect(g); g.connect(ctx.destination);
-      osc.start(s); osc.stop(s + 0.2);
+      osc.start(s); osc.stop(s + dur + 0.02);
     }
-
-    // Physical thump via speaker — iOS Taptic Engine is inaccessible from web,
-    // but a 40 Hz burst makes the speaker cone move enough to feel through the hand.
-    const thump = ctx.createOscillator(), tg = ctx.createGain();
-    thump.type = 'sine';
-    thump.frequency.value = 40;
-    tg.gain.setValueAtTime(0.9, t0);
-    tg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.12);
-    thump.connect(tg); tg.connect(ctx.destination);
-    thump.start(t0); thump.stop(t0 + 0.12);
   } catch (e) {}
-  if (navigator.vibrate) navigator.vibrate([80, 60, 80]); // Android fallback
+}
+
+// Distinct, logical cues per check-in result.
+function chimeOk()   { tone([[784, 0], [1175, 0.085]], 'triangle', 0.2, 0.19);        // bright ascending
+                       if (navigator.vibrate) navigator.vibrate(60); }
+function chimeWarn() { tone([[588, 0], [588, 0.13]], 'triangle', 0.18, 0.15);         // two flat mid notes — "heads up"
+                       if (navigator.vibrate) navigator.vibrate([40, 60, 40]); }
+function chimeFail() { tone([[247, 0], [165, 0.14]], 'sawtooth', 0.17, 0.26);         // low descending buzz — "no"
+                       if (navigator.vibrate) navigator.vibrate([140, 70, 140]); }
+
+// Sound for a check-in result (sheet mode only — driven by the receiver's status).
+function resultSound(status) {
+  if (status === 'checked-in') chimeOk();
+  else if (status === 'already') chimeWarn();
+  else chimeFail();                       // not-registered / error
 }
 
 function flashReticle() {
@@ -376,7 +378,7 @@ function greyscaleStretch(canvas) {
 
 // Full-screen, colour-coded check-in result: green ✓ / orange ↺ / red ✕.
 // Non-blocking (pointer-events:none) so scanning keeps running underneath.
-const RESULT_MS = 1400;
+const RESULT_MS = 2600;   // hold the full-screen check-in result on screen this long
 function showResult(status, id, name) {
   const map = {
     'checked-in':     ['ok',   '✓', 'CHECKED IN'],
@@ -739,7 +741,7 @@ function handleAccept(id) {
   if (state.lastAccepted.id === id && (now - state.lastAccepted.t) < DUP_WINDOW_MS) return;
   state.lastAccepted = { id, t: now };
 
-  flashGreen(); beep(); flashReticle();
+  flashGreen(); flashReticle();   // sound now plays on the check-in result, not the scan
   const del = $('#deleteBtn'); del.dataset.rid = id; del.style.display = 'block';
   setReadout(id, '', '');
   sendScan(id, 'ocr');
@@ -887,9 +889,27 @@ function wireUI() {
 
 /* ────────────────────────── boot ────────────────────────────── */
 
+// Deep-link pairing: the Mac shows a QR of  …/?room=XXXXXX  — opening it here sets
+// the room so there's nothing to type. The URL is then cleaned so a later reload
+// doesn't re-pin a stale room.
+function applyRoomFromURL() {
+  try {
+    const p = new URLSearchParams(location.search).get('room');
+    if (!p) return false;
+    const room = p.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 12);
+    if (!room) return false;
+    state.settings.room = room;
+    saveSettings(state.settings);
+    history.replaceState(null, '', location.pathname);
+    return true;
+  } catch (e) { return false; }
+}
+
 window.addEventListener('load', () => {
   wireUI();
+  const paired = applyRoomFromURL();
   refreshChrome();
   renderHistory();
+  if (paired) toast('Paired · room ' + state.settings.room);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 });

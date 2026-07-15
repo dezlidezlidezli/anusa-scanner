@@ -46,21 +46,26 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.42"   # shared version across the Mac app + web app
+VERSION        = "14.43"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
+PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
 
 # PWA colour palette so the app feels like the same product
+# ANUSA light theme (cream page, dark text, blue primary). The "orange" key name is
+# kept to avoid churn but now holds ANUSA blue.
 C = dict(
-    bg     = "#101418",
-    deck   = "#1a2027",
-    line   = "#2a333d",
-    text   = "#e8edf2",
-    muted  = "#8a97a5",
-    orange = "#ff7a1a",
-    green  = "#3ecf8e",
-    amber  = "#ffb020",
-    red    = "#ff5d5d",
+    bg     = "#faf6ec",   # cream page
+    deck   = "#ffffff",   # panels
+    line   = "#e6e0d1",
+    text   = "#242424",
+    muted  = "#6c7176",
+    orange = "#3b4fd6",   # ANUSA blue — primary action
+    prim_d = "#3444c0",   # darker blue for button hover
+    nav    = "#3b4fd6",   # header bar
+    green  = "#1e9e57",
+    amber  = "#e0a52a",
+    red    = "#cc2f2f",
 )
 
 # ── crypto ────────────────────────────────────────────────────────────────────
@@ -234,16 +239,17 @@ class App:
     def _build_ui(self):
         r = self.root
 
-        # ── Header ────────────────────────────────────────────────────────────
-        hdr = tk.Frame(r, bg=C["bg"])
-        hdr.pack(fill="x", padx=18, pady=(16, 12))
-        tk.Label(hdr, text="ANUSA", font=("Menlo", 15, "bold"),
-                 bg=C["bg"], fg=C["text"]).pack(side="left")
-        tk.Label(hdr, text=" SCANNER  RECEIVER", font=("Menlo", 15),
-                 bg=C["bg"], fg=C["muted"]).pack(side="left")
-        tk.Label(hdr, text=f"v{VERSION}", font=("Menlo", 10),
-                 bg=C["bg"], fg=C["line"]).pack(side="right")
-        self._sep()
+        # ── Header (ANUSA blue status bar) ────────────────────────────────────
+        hdr = tk.Frame(r, bg=C["nav"])
+        hdr.pack(fill="x")
+        hin = tk.Frame(hdr, bg=C["nav"])
+        hin.pack(fill="x", padx=18, pady=13)
+        tk.Label(hin, text="ANUSA", font=("Menlo", 15, "bold"),
+                 bg=C["nav"], fg="#ffffff").pack(side="left")
+        tk.Label(hin, text=" SCANNER  RECEIVER", font=("Menlo", 15),
+                 bg=C["nav"], fg="#d6ddf7").pack(side="left")
+        tk.Label(hin, text=f"v{VERSION}", font=("Menlo", 10),
+                 bg=C["nav"], fg="#aeb8ec").pack(side="right")
 
         # ── Setup (collapsible: connection + on-scan target) ─────────────────
         self._setup_hdr = tk.Frame(r, bg=C["bg"])
@@ -313,7 +319,7 @@ class App:
         me.pack(side="left", fill="x", expand=True, ipady=4)
         me.bind("<Return>", lambda _: self._manual_submit())
         tk.Button(man, text="Enter", font=("Menlo", 12, "bold"), bg=C["orange"],
-                  fg="#1a1005", activebackground="#e06910", relief="flat", cursor="hand2",
+                  fg="#ffffff", activebackground=C["prim_d"], relief="flat", cursor="hand2",
                   padx=14, pady=4, command=self._manual_submit).pack(side="left", padx=(8, 0))
         self._sep()
 
@@ -357,7 +363,7 @@ class App:
         room_entry.bind("<Return>", lambda _: self._toggle_connect())
         self._conn_btn = tk.Button(
             room_row, text="Connect", font=("Menlo", 13, "bold"), bg=C["orange"],
-            fg="#1a1005", activebackground="#e06910", activeforeground="#1a1005",
+            fg="#ffffff", activebackground=C["prim_d"], activeforeground="#ffffff",
             relief="flat", cursor="hand2", padx=16, pady=6, command=self._toggle_connect)
         self._conn_btn.pack(side="left")
 
@@ -369,6 +375,12 @@ class App:
             fg=C["muted"], insertbackground=C["text"], relief="flat", highlightthickness=1,
             highlightbackground=C["line"], highlightcolor=C["orange"]).pack(
                 fill="x", ipady=3, pady=(4, 0))
+
+        tk.Button(
+            conn, text="Show pairing QR  ·  phone scans to join", font=("Menlo", 11),
+            bg=C["deck"], fg=C["orange"], activebackground=C["bg"], relief="solid", bd=1,
+            highlightbackground=C["line"], cursor="hand2", pady=6,
+            command=self._show_pair_qr).pack(fill="x", pady=(10, 0))
 
     def _build_mode_section(self, r):
         mode_bg = tk.Frame(r, bg=C["deck"])
@@ -416,7 +428,7 @@ class App:
                  highlightcolor=C["orange"]).pack(side="left", fill="x", expand=True, ipady=3)
         self._load_btn = tk.Button(
             url_row, text="Load", font=("Menlo", 11, "bold"), bg=C["orange"],
-            fg="#1a1005", activebackground="#e06910", relief="flat",
+            fg="#ffffff", activebackground=C["prim_d"], relief="flat",
             cursor="hand2", padx=12, pady=4, command=self._load_sheet,
         )
         self._load_btn.pack(side="left", padx=(8, 0))
@@ -542,6 +554,59 @@ class App:
                "err": C["red"],  "off": C["muted"]}.get(kind, C["muted"])
         self._dot.configure(fg=col)
         self._status_lbl.configure(text=text, fg=col)
+
+    # ── Pairing QR (the Mac generates the room; the phone scans to join) ──────
+    def _show_pair_qr(self):
+        import random
+        abc = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"          # no 0/O/1/I/L
+        room = "".join(random.choice(abc) for _ in range(6))
+        self._room_var.set(room)
+        # (re)connect the Mac to this freshly generated room
+        self._connected = True
+        self._conn_btn.configure(text="Disconnect")
+        self._set_status("wait", "connecting…")
+        self.bridge.connect(room, self._broker_var.get().strip() or DEFAULT_BROKER)
+        try:
+            png = self._make_qr(f"{PWA_URL}?room={room}")
+        except Exception as e:
+            self._set_status("err", f"QR failed: {e}")
+            return
+        self._pair_window(room, png)
+
+    def _make_qr(self, url):
+        import tempfile
+        import qrcode
+        from qrcode.image.styledpil import StyledPilImage
+        from qrcode.image.styles.moduledrawers import RoundedModuleDrawer
+        from qrcode.image.styles.colormasks import SolidFillColorMask
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
+                           box_size=10, border=2)
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(
+            image_factory=StyledPilImage,
+            module_drawer=RoundedModuleDrawer(),
+            color_mask=SolidFillColorMask(front_color=(59, 79, 214),
+                                          back_color=(255, 255, 255)))
+        path = os.path.join(tempfile.gettempdir(), "anusa_pair_qr.png")
+        img.convert("RGB").save(path)
+        return path
+
+    def _pair_window(self, room, png):
+        win = tk.Toplevel(self.root)
+        win.title("Pair phone")
+        win.configure(bg=C["bg"])
+        win.resizable(False, False)
+        tk.Label(win, text="Scan with your phone camera", font=("Menlo", 14, "bold"),
+                 bg=C["bg"], fg=C["text"]).pack(padx=30, pady=(22, 2))
+        tk.Label(win, text="Opens the scanner already paired — nothing to type.",
+                 font=("Menlo", 10), bg=C["bg"], fg=C["muted"]).pack(padx=30)
+        photo = tk.PhotoImage(file=png)          # Tk 8.6 reads PNG directly
+        img_lbl = tk.Label(win, image=photo, bg=C["bg"], bd=0)
+        img_lbl.image = photo                    # keep a reference from GC
+        img_lbl.pack(padx=30, pady=16)
+        tk.Label(win, text=f"room {room}", font=("Menlo", 13, "bold"),
+                 bg=C["bg"], fg=C["orange"]).pack(pady=(0, 22))
 
     # ── Google Sheet setup ────────────────────────────────────────────────────
 
@@ -806,7 +871,10 @@ def _selftest():
     try:
         svc = sheets.build_service(interactive=False)
         svc.spreadsheets()   # touch the discovery-built resource
-        print("SELFTEST OK: google libs import + sheets service built")
+        import qrcode  # noqa: F401  — pairing QR
+        from qrcode.image.styledpil import StyledPilImage  # noqa: F401
+        from qrcode.image.styles.moduledrawers import RoundedModuleDrawer  # noqa: F401
+        print("SELFTEST OK: google libs + sheets service + qrcode")
         return 0
     except Exception as e:
         print(f"SELFTEST FAIL: {type(e).__name__}: {e}")

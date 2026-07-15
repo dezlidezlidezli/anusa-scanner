@@ -11,21 +11,26 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="ANUSA Scanner">
-<meta name="theme-color" content="#101418">
+<meta name="theme-color" content="#3b4fd6">
 <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
 <link rel="icon" href="./icons/icon-192.png">
 
 <style>
   :root{
-    --ink:#101418;        /* base — unlit phone at a night event */
-    --deck:#1a2027;       /* panels */
-    --line:#2a333d;
-    --text:#e8edf2;
-    --muted:#8a97a5;
-    --hivis:#ff7a1a;      /* safety orange — reticle, primary action */
-    --tick:#3ecf8e;       /* confirmed read only */
-    --warn:#ffb020;
-    --bad:#ff5d5d;
+    --ink:#faf6ec;        /* page background — ANUSA cream */
+    --deck:#ffffff;       /* panels / bottom deck */
+    --line:#e6e0d1;       /* hairlines on cream */
+    --text:#242424;       /* body text */
+    --muted:#6c7176;      /* secondary text */
+    --hivis:#3b4fd6;      /* ANUSA blue — primary action / reticle */
+    --sky:#5a9be9;        /* ANUSA light blue — secondary accent */
+    --nav:#3b4fd6;        /* header / status bar — primary */
+    --tick:#1e9e57;       /* success (text on light) */
+    --warn:#b8730a;       /* warn (text on light) */
+    --bad:#cc2f2f;        /* fail (text on light) */
+    --flash-ok:#34c46f;   /* result-overlay backgrounds (bright) */
+    --flash-warn:#ffab2e;
+    --flash-bad:#ff4d42;
     --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   }
@@ -45,22 +50,22 @@
   /* ── header ─────────────────────────────── */
   header{
     display:flex;align-items:center;gap:10px;
-    padding:10px 14px;background:var(--ink);border-bottom:1px solid var(--line);
+    padding:10px 14px;background:var(--nav);
     z-index:5;
   }
-  .wordmark{font-family:var(--mono);font-size:13px;letter-spacing:.18em;color:var(--muted)}
-  .wordmark b{color:var(--text);font-weight:600}
+  .wordmark{font-family:var(--mono);font-size:13px;letter-spacing:.18em;color:rgba(255,255,255,.82)}
+  .wordmark b{color:#fff;font-weight:700}
   .room-chip{
     margin-left:auto;font-family:var(--mono);font-size:12px;letter-spacing:.12em;
-    border:1px solid var(--line);border-radius:6px;padding:4px 8px;color:var(--text);
-    background:var(--deck);
+    border:1px solid rgba(255,255,255,.35);border-radius:6px;padding:4px 8px;color:#fff;
+    background:rgba(255,255,255,.14);
   }
-  .room-chip .lbl{color:var(--muted);margin-right:6px;font-size:10px}
-  .status{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);letter-spacing:.06em}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
-  .dot.ok{background:var(--tick)} .dot.wait{background:var(--warn)} .dot.err{background:var(--bad)}
-  .icon-btn{padding:6px;color:var(--muted);border-radius:8px;line-height:0}
-  .icon-btn:active{color:var(--text);background:var(--deck)}
+  .room-chip .lbl{color:rgba(255,255,255,.72);margin-right:6px;font-size:10px}
+  .status{display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,.82);letter-spacing:.06em}
+  .dot{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.5);flex:none}
+  .dot.ok{background:#5ee29a} .dot.wait{background:#ffcf5e} .dot.err{background:#ff8a80}
+  .icon-btn{padding:6px;color:rgba(255,255,255,.85);border-radius:8px;line-height:0}
+  .icon-btn:active{color:#fff;background:rgba(255,255,255,.18)}
 
   /* ── stage (camera) ─────────────────────── */
   .stage{position:relative;flex:1;background:#000;overflow:hidden}
@@ -75,7 +80,7 @@
   /* outer concentric guide ring */
   .reticle::before{
     content:'';position:absolute;inset:-11px;
-    border:1px dashed rgba(255,122,26,.28);border-radius:16px;pointer-events:none;
+    border:1px dashed rgba(255,255,255,.4);border-radius:16px;pointer-events:none;
   }
   .reticle i{position:absolute;width:26px;height:26px;border:2.5px solid var(--hivis)}
   .reticle i:nth-child(1){left:-2px;top:-2px;border-right:0;border-bottom:0;border-radius:10px 0 0 0}
@@ -91,8 +96,8 @@
     position:absolute;left:0;right:0;
     /* below reticle: 47% centre + half card height (portrait: ~54vw, max 214px) + gap */
     top:calc(47% + min(54vw,214px) + 14px);
-    text-align:center;font-size:12px;color:var(--muted);letter-spacing:.08em;
-    cursor:pointer;
+    text-align:center;font-size:12px;color:rgba(255,255,255,.9);letter-spacing:.08em;
+    text-shadow:0 1px 4px rgba(0,0,0,.6);cursor:pointer;
   }
   #dbgCanvas{
     position:absolute;bottom:10px;left:10px;
@@ -130,10 +135,10 @@
     position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
     gap:18px;background:var(--ink);z-index:6;padding:24px;text-align:center;
   }
-  .gate .mark{font-family:var(--mono);font-size:15px;letter-spacing:.22em;color:var(--muted)}
+  .gate .mark{font-family:var(--mono);font-size:15px;letter-spacing:.22em;color:var(--hivis);font-weight:700}
   .gate p{font-size:13px;color:var(--muted);max-width:34ch;line-height:1.5}
   .go{
-    background:var(--hivis);color:#1a1005;font-weight:700;font-size:16px;letter-spacing:.04em;
+    background:var(--hivis);color:#fff;font-weight:700;font-size:16px;letter-spacing:.04em;
     padding:16px 34px;border-radius:12px;
   }
   .go:active{transform:scale(.98)}
@@ -150,7 +155,7 @@
     font-family:var(--mono);font-size:clamp(26px,9vw,40px);font-weight:600;letter-spacing:.08em;
     color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   }
-  .readout .num.empty{color:#39434e}
+  .readout .num.empty{color:#cbc5b6}
   .readout .state{font-size:12px;color:var(--muted);font-family:var(--mono);white-space:nowrap}
   .readout .state.ok{color:var(--tick)}
   .readout .state.warn{color:var(--warn)}
@@ -162,7 +167,7 @@
     border:1px solid var(--line);border-radius:10px;padding:10px 6px;letter-spacing:.04em;
   }
   .deck-row .flat:active{color:var(--text);background:var(--ink)}
-  .deck-row .flat.stop{color:var(--hivis);border-color:rgba(255,122,26,.45)}
+  .deck-row .flat.stop{color:var(--hivis);border-color:rgba(59,79,214,.4)}
 
   /* manual entry */
   .manual{display:none;gap:8px;margin-top:10px}
@@ -213,7 +218,7 @@
     border:1px solid var(--line);border-radius:10px;padding:0 14px;color:var(--muted);font-size:12px;letter-spacing:.06em
   }
   .sheet .save{
-    width:100%;background:var(--hivis);color:#1a1005;font-weight:700;font-size:15px;
+    width:100%;background:var(--hivis);color:#fff;font-weight:700;font-size:15px;
     border-radius:12px;padding:14px;margin-top:4px;
   }
   .sheet .note{font-size:11px;color:var(--muted);line-height:1.5;margin-top:10px}
@@ -232,9 +237,9 @@
   #result .word{font-size:9.5vw;font-weight:800;letter-spacing:.03em}
   #result .num{font-size:7vw;font-weight:700;font-family:var(--mono);opacity:.9}
   #result .who{font-size:5vw;font-family:var(--mono);opacity:.8;word-break:break-word}
-  #result.ok{background:var(--tick);color:#052018}
-  #result.warn{background:var(--warn);color:#2b1c00}
-  #result.bad{background:var(--bad);color:#2c0707}
+  #result.ok{background:var(--flash-ok);color:#052018}
+  #result.warn{background:var(--flash-warn);color:#2b1c00}
+  #result.bad{background:var(--flash-bad);color:#2c0707}
 </style>
 </head>
 <body>
@@ -326,7 +331,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.42</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.43</p>
 </div>
 
 <div class="toast" id="toast"></div>
