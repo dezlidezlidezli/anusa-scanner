@@ -358,9 +358,11 @@ async function initOCR() {
   if (typeof Tesseract === 'undefined') throw new Error('OCR engine failed to load — check your connection and reload.');
   setReadout('', 'loading OCR engine…', '');
   const worker = await Tesseract.createWorker('eng');
-  // SINGLE_LINE: we OCR a central horizontal band (see grabFrame), so the number is one
-  // line. Skipping full-block layout analysis is ~40% faster than SINGLE_BLOCK.
-  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_LINE) ? Tesseract.PSM.SINGLE_LINE : '7';
+  // SINGLE_BLOCK: the card fills a variable part of the frame and carries several text
+  // rows (name, number, "STUDENT", university text). Block segmentation isolates the
+  // number's line and finds the 7-digit run. SINGLE_LINE broke this: when the whole card
+  // fits the frame it read all rows as one line → junk.
+  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_BLOCK) ? Tesseract.PSM.SINGLE_BLOCK : '6';
   await worker.setParameters({
     tessedit_char_whitelist: '0123456789',
     tessedit_pageseg_mode: psm,
@@ -392,22 +394,8 @@ function grabFrame(rotIdx) {
   ctx.translate(outW / 2, outH / 2);
   ctx.rotate(rad);
   ctx.drawImage(video, -srcW / 2, -srcH / 2, srcW, srcH);
-  // OCR only a central horizontal band. After the correct rotation the student number
-  // runs across the middle, so the band keeps it while dropping the date/label/barcode
-  // rows above and below — ~2× fewer pixels, and it lets us use PSM 7 (single line) for a
-  // markedly faster recognise plus fewer junk candidates (which also speeds orientation
-  // search). A WRONG rotation leaves the number vertical/off-band → reads null → rejected
-  // sooner. OCR_BAND_FRAC is generous so a hand-framed number stays inside; raise it if a
-  // real card's number sits off-centre, lower it for more speed.
-  const bandH = Math.max(24, Math.round(outH * OCR_BAND_FRAC));
-  const bandY = Math.round((outH - bandH) / 2);
-  const band = document.createElement('canvas');
-  band.width = outW; band.height = bandH;
-  band.getContext('2d', { willReadFrequently: true })
-     .drawImage(out, 0, bandY, outW, bandH, 0, 0, outW, bandH);
-  return greyscaleStretch(band);
+  return greyscaleStretch(out);
 }
-const OCR_BAND_FRAC = 0.5;   // central slice of the frame height passed to OCR
 
 // Rotation search + lock.
 //
