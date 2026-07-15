@@ -377,6 +377,7 @@ async function initOCR() {
 // Grab the full video frame with rotIdx additional 90°CCW steps beyond the base
 // portrait correction. rotIdx 0 = most common (card landscape on table, phone portrait).
 // The reticle is cosmetic guidance only — never used for backend cropping.
+const GRAB_SCALE = 0.75;   // OCR frame size as a fraction of native video (see below)
 function grabFrame(rotIdx) {
   const video = $('#video');
   const stage = video.getBoundingClientRect();
@@ -385,7 +386,10 @@ function grabFrame(rotIdx) {
   const portrait = stage.height > stage.width;
   const totalRot = ((portrait ? 1 : 0) + (rotIdx || 0)) % 4;
   const rad = -totalRot * Math.PI / 2; // negative = CCW
-  const srcW = Math.round(vw / 2), srcH = Math.round(vh / 2); // half-res for speed
+  // OCR resolution as a fraction of the native video. Bigger = larger, crisper digits →
+  // more reliable reads on small/skewed/marginal cards; smaller = faster. 0.5 was too low
+  // (7 digits ≈ 14px each — under Tesseract's comfort zone). Tunable vs speed.
+  const srcW = Math.round(vw * GRAB_SCALE), srcH = Math.round(vh * GRAB_SCALE);
   const swap = (totalRot % 2 === 1);
   const outW = swap ? srcH : srcW, outH = swap ? srcW : srcH;
   const out = document.createElement('canvas');
