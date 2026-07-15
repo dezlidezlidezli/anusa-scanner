@@ -45,7 +45,6 @@ const state = {
   track: null,
   scanning: false,
   busy: false,
-  lastRead: null,
   lastAccepted: { id: null, t: 0 },
   history: (() => { try { return JSON.parse(localStorage.getItem('wedge.hist') || '[]'); } catch (e) { return []; } })(),
   audio: null,
@@ -381,132 +380,23 @@ function grabFrame(rotIdx) {
 }
 
 // RT rotation lock — persists across ticks so we stay fast once orientation is found.
-// Reset when a new scan session starts so fresh card orientations re-detect cleanly.
-let _rtLocked = null; // null = searching; 0-3 = locked rotation index
+// The card can be presented in any of the four 90° orientations; we OCR one rotation
+// per tick (keeps each tick to a single OCR pass — low memory, no iOS tab crashes),
+// cycling until a rotation yields a valid read, then lock onto it for the session.
+let _rtLocked = null;   // null = searching; 0-3 = locked rotation index
 let _rtFailCount = 0;
+let _rtSearchOrder = [0, 1, 2, 3];
+let _rtSearchPos = 0;
 const RT_FAIL_RESET = 8;
-function resetRtState() { _rtLocked = null; _rtFailCount = 0; }
 
-// Physical layout of the ANU ID-1 card (85.6 × 54 mm, landscape orientation).
-// Tune BC_H_MM / OFF_* if the extracted patch drifts; OUT_H trades speed for clarity.
-const KS = {
-  BC_H_MM:    38,   // barcode physical height — used for ppm from eigenvalue spread
-  OFF_X_MM:   18,   // barcode-centre → student-number-centre, card +x (rightward)
-  OFF_Y_MM:   27,   // barcode-centre → student-number-centre, card +y (downward)
-  PATCH_W_MM: 42,   // extraction patch width  (generous)
-  PATCH_H_MM: 16,   // extraction patch height
-  OUT_H:      200,  // output canvas height in px
-  DARK_RATIO: 0.60, // threshold = mean * DARK_RATIO (relative to scene brightness)
-  BD_THRESH:  0.55, // high-density block threshold = maxDensity * BD_THRESH (relative)
-};
-
-// Locate the barcode region by edge-transition density (no decoding required —
-// works even on worn/blurry barcodes). Returns {snx,sny,angle,ppm} in video pixels.
-function densityKeystone(video) {
-  const VW = video.videoWidth, VH = video.videoHeight;
-  if (!VW || !VH) return null;
-
-  // Downsample to ~192px wide for fast analysis
-  const S   = Math.max(1, Math.round(VW / 192));
-  const AW  = Math.ceil(VW/S), AH = Math.ceil(VH/S);
-  const tmp = document.createElement('canvas');
-  tmp.width = AW; tmp.height = AH;
-  const tctx = tmp.getContext('2d', {willReadFrequently: true});
-  tctx.drawImage(video, 0, 0, AW, AH);
-  const raw = tctx.getImageData(0, 0, AW, AH).data;
-
-  // Grayscale (fixed-point integer — avoids repeated float ops)
-  const gray = new Uint8Array(AW * AH);
-  let gsum = 0;
-  for (let i=0,p=0; i<gray.length; i++,p+=4) {
-    gray[i] = (raw[p]*77 + raw[p+1]*150 + raw[p+2]*29) >> 8;
-    gsum += gray[i];
-  }
-  // Relative dark threshold: fraction of scene mean — adapts to lighting
-  const darkT = (gsum / gray.length) * KS.DARK_RATIO;
-
-  // Per-pixel 4-neighbour transition count: high = barcode-like texture
-  const trans = new Uint8Array(AW * AH);
-  for (let y=1; y<AH-1; y++) {
-    for (let x=1; x<AW-1; x++) {
-      const c = gray[y*AW+x] < darkT;
-      trans[y*AW+x] =
-        ((gray[y*AW+x+1]  < darkT) !== c ? 1 : 0) +
-        ((gray[y*AW+x-1]  < darkT) !== c ? 1 : 0) +
-        ((gray[(y+1)*AW+x]< darkT) !== c ? 1 : 0) +
-        ((gray[(y-1)*AW+x]< darkT) !== c ? 1 : 0);
-    }
-  }
-
-  // Block density map (6×6 analysis-px blocks)
-  const BLK = 6;
-  const NBX = Math.floor(AW/BLK), NBY = Math.floor(AH/BLK);
-  const bd = new Float32Array(NBX * NBY);
-  let maxBD = 0;
-  for (let by=0; by<NBY; by++)
-    for (let bx=0; bx<NBX; bx++) {
-      let s=0;
-      for (let y=by*BLK; y<(by+1)*BLK && y<AH; y++)
-        for (let x=bx*BLK; x<(bx+1)*BLK && x<AW; x++)
-          s += trans[y*AW+x];
-      bd[by*NBX+bx] = s;
-      if (s > maxBD) maxBD = s;
-    }
-  if (maxBD < 8) return null;
-
-  // Weighted centroid + second moments of blocks above relative density threshold
-  const bdT = maxBD * KS.BD_THRESH;
-  let wcx=0, wcy=0, wsum=0;
-  for (let by=0; by<NBY; by++)
-    for (let bx=0; bx<NBX; bx++) {
-      const d=bd[by*NBX+bx]; if (d<bdT) continue;
-      wcx += (bx+.5)*BLK*d; wcy += (by+.5)*BLK*d; wsum += d;
-    }
-  if (!wsum) return null;
-  const cx=wcx/wsum, cy=wcy/wsum;
-
-  let m20=0, m02=0, m11=0;
-  for (let by=0; by<NBY; by++)
-    for (let bx=0; bx<NBX; bx++) {
-      const d=bd[by*NBX+bx]; if (d<bdT) continue;
-      const dx=(bx+.5)*BLK-cx, dy=(by+.5)*BLK-cy;
-      m20+=dx*dx*d; m02+=dy*dy*d; m11+=dx*dy*d;
-    }
-  m20/=wsum; m02/=wsum; m11/=wsum;
-
-  // Card orientation angle from principal axis of barcode density blob
-  const angle = 0.5 * Math.atan2(2*m11, m20-m02);
-
-  // ppm from eigenvalue spread (uniform distribution: σ = L/(2√3))
-  const ev1 = (m20+m02)/2 + Math.sqrt(((m20-m02)/2)**2 + m11**2);
-  const ppm  = Math.sqrt(ev1) * S * 2*Math.sqrt(3) / KS.BC_H_MM;
-
-  // Project barcode centre → student number centre in video pixels
-  const vcx=cx*S, vcy=cy*S;
-  const cos=Math.cos(angle), sin=Math.sin(angle);
-  const snx = vcx + (KS.OFF_X_MM*cos - KS.OFF_Y_MM*sin)*ppm;
-  const sny = vcy + (KS.OFF_X_MM*sin + KS.OFF_Y_MM*cos)*ppm;
-
-  if (snx<0||snx>VW||sny<0||sny>VH) return null;
-  return {snx, sny, angle, ppm};
-}
-
-function keystoneGrab() {
-  const video = $('#video');
-  const ks = densityKeystone(video);
-  if (!ks) return null;
-  const {snx, sny, angle, ppm} = ks;
-  const outH = KS.OUT_H;
-  const outW = Math.round(KS.PATCH_W_MM / KS.PATCH_H_MM * outH);
-  const out  = document.createElement('canvas');
-  out.width  = outW; out.height = outH;
-  const ctx  = out.getContext('2d');
-  const sf   = outH / (KS.PATCH_H_MM * ppm);
-  ctx.translate(outW/2, outH/2);
-  ctx.rotate(-angle);
-  ctx.scale(sf, sf);
-  ctx.drawImage(video, -snx, -sny);
-  return greyscaleStretch(out);
+function resetRtState() {
+  _rtLocked = null; _rtFailCount = 0; _rtSearchPos = 0;
+  // Bias the search toward whichever orientation last worked so repeat sessions
+  // lock on the very first tick instead of cycling all four again.
+  const last = Number(localStorage.getItem('wedge.rot'));
+  _rtSearchOrder = (last >= 0 && last <= 3)
+    ? [last, ...[0, 1, 2, 3].filter(r => r !== last)]
+    : [0, 1, 2, 3];
 }
 
 function extractId(text, nDigits, prefix) {
@@ -525,11 +415,20 @@ function extractId(text, nDigits, prefix) {
 
 let dbgVisible = false;
 
+// Confirmation tally: a 7-digit value must be read CONFIRM_COUNT times before we
+// accept it. Reads accumulate per-value, so a stray different number or a null read
+// can never wipe out progress on the correct value — only two genuine reads of the
+// SAME value confirm it.
+const CONFIRM_COUNT = 2;
+const _tally = new Map();
+function resetConfirm() { _tally.clear(); }
+
 const _dbgLog = [];
 function dbgRecord(mode, rawText, candidate) {
   if (!dbgVisible) return;
-  const willConfirm = candidate && candidate === state.lastRead;
-  const entry = `[${mode}] "${rawText.replace(/\s+/g,' ').trim().slice(0,48)}" → ${candidate||'null'} ${willConfirm?'✓CONFIRM':candidate?'(1st)':''}`;
+  const prospective = candidate ? (_tally.get(candidate) || 0) + 1 : 0;
+  const willConfirm = prospective >= CONFIRM_COUNT;
+  const entry = `[${mode}] "${rawText.replace(/\s+/g,' ').trim().slice(0,48)}" → ${candidate||'null'} ${willConfirm?'✓CONFIRM':candidate?'('+prospective+'×)':''}`;
   _dbgLog.unshift(entry);
   if (_dbgLog.length > 8) _dbgLog.pop();
   const el = $('#dbgText');
@@ -624,17 +523,10 @@ async function scanTick() {
   if (!state.scanning || state.busy || !state.workerReady) return;
   state.busy = true;
   try {
-    // KS path: barcode-density deskew (fast when barcode is detected)
-    const ksFrame = keystoneGrab();
-    if (ksFrame) {
-      if (dbgVisible) drawDbgCanvas(ksFrame, 'KS');
-      handleRead(await ocrFrame(ksFrame, 'KS'));
-      return;
-    }
-
-    // RT path: full video frame — reticle is cosmetic only, never used for cropping.
-    // Try each 90° rotation in turn; lock onto whichever one gives a valid read.
+    // Full video frame — the reticle is cosmetic guidance only, never cropped to.
+    // Exactly ONE OCR pass per tick keeps memory flat so iOS Safari won't kill the tab.
     if (_rtLocked !== null) {
+      // Locked: scan the known-good rotation every tick (fast path).
       const frame = grabFrame(_rtLocked);
       if (!frame) return;
       if (dbgVisible) drawDbgCanvas(frame, `RT${_rtLocked}`);
@@ -643,22 +535,31 @@ async function scanTick() {
       else _rtFailCount = 0;
       handleRead(id);
     } else {
-      for (let r = 0; r < 4; r++) {
-        const frame = grabFrame(r);
-        if (!frame) continue;
+      // Searching: try one rotation this tick; advance next tick if it misses.
+      const r = _rtSearchOrder[_rtSearchPos];
+      const frame = grabFrame(r);
+      if (frame) {
         if (dbgVisible) drawDbgCanvas(frame, `RT${r}?`);
         const id = await ocrFrame(frame, `RT${r}?`);
-        if (id) { _rtLocked = r; _rtFailCount = 0; handleRead(id); return; }
+        if (id) {
+          _rtLocked = r; _rtFailCount = 0;
+          localStorage.setItem('wedge.rot', String(r)); // remember for next session
+          handleRead(id);
+          return;
+        }
       }
+      _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length;
     }
   } catch(e) { /* transient error: skip frame */ }
   finally { state.busy = false; }
 }
 
 function handleRead(id) {
-  if (!id) { return; }  // no valid N-digit read — don't reset the consecutive streak
-  if (id !== state.lastRead) { state.lastRead = id; return; }
-  state.lastRead = null;
+  if (!id) return;                       // null read — ignore, tally is untouched
+  const n = (_tally.get(id) || 0) + 1;
+  _tally.set(id, n);
+  if (n < CONFIRM_COUNT) return;         // not yet seen enough times
+  resetConfirm();                        // confirmed — clear tallies for the next scan
 
   // Block re-scan of any ID already in history — show Re-scan button instead
   if (state.history.some(h => h.id === id)) {
@@ -678,7 +579,8 @@ function handleRead(id) {
 let loopTimer = null;
 function startScanning() {
   state.scanning = true;
-  resetRtState(); // re-detect card orientation for each new scan session
+  resetRtState();  // re-detect card orientation for each new scan session
+  resetConfirm();  // fresh confirmation tally per session
   $('#pauseBtn').style.display = 'block';
   if (!loopTimer) loopTimer = setInterval(scanTick, 350);
   // Show video stream dimensions — useful for diagnosing iOS rotation issues
