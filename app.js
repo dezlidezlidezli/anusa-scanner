@@ -357,52 +357,35 @@ async function initOCR() {
 }
 
 /* map the on-screen reticle to source-video pixels (object-fit: cover) */
-function grabReticle() {
+// Grab the full video frame with rotIdx additional 90°CCW steps beyond the base
+// portrait correction. rotIdx 0 = most common (card landscape on table, phone portrait).
+// The reticle is cosmetic guidance only — never used for backend cropping.
+function grabFrame(rotIdx) {
   const video = $('#video');
   const stage = video.getBoundingClientRect();
-  const ret = $('#reticle').getBoundingClientRect();
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return null;
-
-  const scale = Math.max(stage.width / vw, stage.height / vh);
-  const dispW = vw * scale, dispH = vh * scale;
-  const offX = (dispW - stage.width) / 2, offY = (dispH - stage.height) / 2;
-
-  let sx = (ret.left - stage.left + offX) / scale;
-  let sy = (ret.top  - stage.top  + offY) / scale;
-  let sw = ret.width  / scale;
-  let sh = ret.height / scale;
-  sx = Math.max(0, Math.min(vw - 2, sx)); sy = Math.max(0, Math.min(vh - 2, sy));
-  sw = Math.min(sw, vw - sx); sh = Math.min(sh, vh - sy);
-  if (sw < 8 || sh < 8) return null;
-
-  const targetH = 340;   // full portrait card — 7-digit filter handles false-read rejection
-  const targetW = Math.round(sw * (targetH / sh));
-  const c = document.createElement('canvas');
-  c.width = targetW; c.height = targetH;
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, targetW, targetH);
-  greyscaleStretch(c);
-
-  // Rotate when the DISPLAY area is portrait — the video stream dimensions are unreliable
-  // on iOS (sensor reports landscape 1920×1080 even when phone is held portrait).
-  // stage = video.getBoundingClientRect(), computed above; its aspect ratio matches the screen.
-  if (stage.height <= stage.width) return c;
-
-  const rot = document.createElement('canvas');
-  rot.width  = c.height;
-  rot.height = c.width;
-  const rctx = rot.getContext('2d');
-  // 90° CCW: card held portrait (90° CW from landscape) + 90° CCW canvas = digits upright.
-  // CW would double the rotation → 180° → upside-down digits → garbled OCR.
-  rctx.translate(0, rot.height);
-  rctx.rotate(-Math.PI / 2);
-  rctx.drawImage(c, 0, 0);
-  // No zone crop: PSM 6 + digits-only whitelist + 7-digit filter handle false-positive
-  // exclusion; zone crop breaks tilted cards where the number ends up in the wrong quadrant.
-  return greyscaleStretch(rot);
+  const portrait = stage.height > stage.width;
+  const totalRot = ((portrait ? 1 : 0) + (rotIdx || 0)) % 4;
+  const rad = -totalRot * Math.PI / 2; // negative = CCW
+  const srcW = Math.round(vw / 2), srcH = Math.round(vh / 2); // half-res for speed
+  const swap = (totalRot % 2 === 1);
+  const outW = swap ? srcH : srcW, outH = swap ? srcW : srcH;
+  const out = document.createElement('canvas');
+  out.width = outW; out.height = outH;
+  const ctx = out.getContext('2d', { willReadFrequently: true });
+  ctx.translate(outW / 2, outH / 2);
+  ctx.rotate(rad);
+  ctx.drawImage(video, -srcW / 2, -srcH / 2, srcW, srcH);
+  return greyscaleStretch(out);
 }
+
+// RT rotation lock — persists across ticks so we stay fast once orientation is found.
+// Reset when a new scan session starts so fresh card orientations re-detect cleanly.
+let _rtLocked = null; // null = searching; 0-3 = locked rotation index
+let _rtFailCount = 0;
+const RT_FAIL_RESET = 8;
+function resetRtState() { _rtLocked = null; _rtFailCount = 0; }
 
 // Physical layout of the ANU ID-1 card (85.6 × 54 mm, landscape orientation).
 // Tune BC_H_MM / OFF_* if the extracted patch drifts; OUT_H trades speed for clarity.
@@ -603,54 +586,72 @@ async function saveFrames() {
   window.open(sheetUrl); // fallback: open in tab → long-press to save
 }
 
+function drawDbgCanvas(frame, modeLabel) {
+  const dbg = $('#dbgCanvas');
+  dbg.width = frame.width; dbg.height = frame.height;
+  const dctx = dbg.getContext('2d');
+  dctx.drawImage(frame, 0, 0);
+  const W = frame.width, H = frame.height;
+  dctx.font = `bold ${Math.max(9, Math.round(W * 0.06))}px monospace`;
+  dctx.textBaseline = 'top';
+  for (let pct = 10; pct < 100; pct += 10) {
+    const x = W * pct / 100, y = H * pct / 100;
+    dctx.strokeStyle = pct === 50 ? 'rgba(255,122,26,0.8)' : 'rgba(255,122,26,0.35)';
+    dctx.lineWidth = pct === 50 ? 1.5 : 0.8;
+    dctx.beginPath(); dctx.moveTo(x,0); dctx.lineTo(x,H); dctx.stroke();
+    dctx.beginPath(); dctx.moveTo(0,y); dctx.lineTo(W,y); dctx.stroke();
+    dctx.fillStyle='rgba(0,0,0,0.6)'; dctx.fillText(pct+'%', x+2, 0);
+    dctx.fillStyle='rgba(255,122,26,1)'; dctx.fillText(pct+'%', x+2, 0);
+    dctx.fillStyle='rgba(0,0,0,0.6)'; dctx.fillText(pct+'%', 2, y+1);
+    dctx.fillStyle='rgba(255,122,26,1)'; dctx.fillText(pct+'%', 2, y+1);
+  }
+  const vid = $('video');
+  const label = `${vid.videoWidth}×${vid.videoHeight} [${modeLabel}] ${W}×${H}`;
+  dctx.font = `bold ${Math.max(10, Math.round(W*0.06))}px monospace`;
+  dctx.fillStyle = 'rgba(0,0,0,0.7)'; dctx.fillText(label, 3, H-Math.round(W*0.08)-1);
+  dctx.fillStyle = '#ff7a1a';         dctx.fillText(label, 2, H-Math.round(W*0.08));
+}
+
+async function ocrFrame(frame, modeLabel) {
+  const { data } = await state.worker.recognize(frame);
+  const id = extractId(data.text || '', state.settings.digits, state.settings.prefix);
+  captureFrame(modeLabel, frame, data.text || '', id);
+  dbgRecord(modeLabel, data.text || '', id);
+  return id;
+}
+
 async function scanTick() {
   if (!state.scanning || state.busy || !state.workerReady) return;
   state.busy = true;
   try {
-    let mode = '--', frame = keystoneGrab();
-    if (frame) { mode = 'KS'; } else { frame = grabReticle(); if (frame) mode = 'RT'; }
-    if (frame) {
-      if (dbgVisible) {
-        const dbg = $('#dbgCanvas');
-        dbg.width = frame.width; dbg.height = frame.height;
-        const dctx = dbg.getContext('2d');
-        dctx.drawImage(frame, 0, 0);
-        // Grid overlay — 10% lines with labels so screenshots reveal exact position
-        const W = frame.width, H = frame.height;
-        dctx.font = `bold ${Math.max(9, Math.round(W * 0.06))}px monospace`;
-        dctx.textBaseline = 'top';
-        for (let pct = 10; pct < 100; pct += 10) {
-          const x = W * pct / 100, y = H * pct / 100;
-          dctx.strokeStyle = pct === 50 ? 'rgba(255,122,26,0.8)' : 'rgba(255,122,26,0.35)';
-          dctx.lineWidth = pct === 50 ? 1.5 : 0.8;
-          dctx.beginPath(); dctx.moveTo(x,0); dctx.lineTo(x,H); dctx.stroke();
-          dctx.beginPath(); dctx.moveTo(0,y); dctx.lineTo(W,y); dctx.stroke();
-          dctx.fillStyle = 'rgba(0,0,0,0.6)';
-          dctx.fillText(pct+'%', x+2, 0);
-          dctx.fillStyle = 'rgba(255,122,26,1)';
-          dctx.fillText(pct+'%', x+2, 0);
-          dctx.fillStyle = 'rgba(0,0,0,0.6)';
-          dctx.fillText(pct+'%', 2, y+1);
-          dctx.fillStyle = 'rgba(255,122,26,1)';
-          dctx.fillText(pct+'%', 2, y+1);
-        }
-        // Diagnostic: vw×vh and whether rotation fired
-        const vid = $('video'), st = vid.getBoundingClientRect();
-        const rotFired = st.height > st.width;
-        const label = `${vid.videoWidth}×${vid.videoHeight} rot:${rotFired?'YES':'NO'} out:${W}×${H}`;
-        dctx.font = `bold ${Math.max(10,Math.round(W*0.06))}px monospace`;
-        dctx.fillStyle = 'rgba(0,0,0,0.7)';
-        dctx.fillText(label, 3, H-Math.round(W*0.08)-1);
-        dctx.fillStyle = '#ff7a1a';
-        dctx.fillText(label, 2, H-Math.round(W*0.08));
-      }
-      const { data } = await state.worker.recognize(frame);
-      const id = extractId(data.text || '', state.settings.digits, state.settings.prefix);
-      captureFrame(mode, frame, data.text || '', id);
-      dbgRecord(mode, data.text || '', id);
-      handleRead(id);
+    // KS path: barcode-density deskew (fast when barcode is detected)
+    const ksFrame = keystoneGrab();
+    if (ksFrame) {
+      if (dbgVisible) drawDbgCanvas(ksFrame, 'KS');
+      handleRead(await ocrFrame(ksFrame, 'KS'));
+      return;
     }
-  } catch (e) { /* transient recognize errors: skip frame */ }
+
+    // RT path: full video frame — reticle is cosmetic only, never used for cropping.
+    // Try each 90° rotation in turn; lock onto whichever one gives a valid read.
+    if (_rtLocked !== null) {
+      const frame = grabFrame(_rtLocked);
+      if (!frame) return;
+      if (dbgVisible) drawDbgCanvas(frame, `RT${_rtLocked}`);
+      const id = await ocrFrame(frame, `RT${_rtLocked}`);
+      if (!id) { if (++_rtFailCount >= RT_FAIL_RESET) resetRtState(); }
+      else _rtFailCount = 0;
+      handleRead(id);
+    } else {
+      for (let r = 0; r < 4; r++) {
+        const frame = grabFrame(r);
+        if (!frame) continue;
+        if (dbgVisible) drawDbgCanvas(frame, `RT${r}?`);
+        const id = await ocrFrame(frame, `RT${r}?`);
+        if (id) { _rtLocked = r; _rtFailCount = 0; handleRead(id); return; }
+      }
+    }
+  } catch(e) { /* transient error: skip frame */ }
   finally { state.busy = false; }
 }
 
@@ -677,6 +678,7 @@ function handleRead(id) {
 let loopTimer = null;
 function startScanning() {
   state.scanning = true;
+  resetRtState(); // re-detect card orientation for each new scan session
   $('#pauseBtn').style.display = 'block';
   if (!loopTimer) loopTimer = setInterval(scanTick, 350);
   // Show video stream dimensions — useful for diagnosing iOS rotation issues
