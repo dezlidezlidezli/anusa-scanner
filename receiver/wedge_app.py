@@ -2,7 +2,8 @@
 """
 ANUSA Scanner — macOS receiver app.
 
-Enter the room code from the phone app and Connect. Then pick what each scan does:
+A native window (pywebview) rendering ui.html for the interface, with this file as
+the backend. Enter/scan a room code, then pick what each scan does:
 
   • Type keystrokes  — types the number + Enter into whatever window has focus
                        (when THIS window is focused it's shown but not typed).
@@ -15,15 +16,15 @@ Enter the room code from the phone app and Connect. Then pick what each scan doe
 import base64
 import csv
 import hashlib
+import io
 import json
 import os
 import queue
+import random
 import ssl
 import sys
 import threading
 import time
-import tkinter as tk
-from tkinter import filedialog
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -39,34 +40,27 @@ try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 except ImportError:
     sys.exit("Missing: pip install cryptography")
+try:
+    import webview
+except ImportError:
+    sys.exit("Missing: pip install pywebview")
 
-# pynput (keystrokes) and the Google libraries (via sheets.py) are imported lazily
-# so the app still opens if a mode's deps aren't ready — you see an in-app message.
+# pynput (keystrokes), the Google libraries (via sheets.py), and qrcode are imported
+# lazily so the app still opens if a mode's deps aren't ready.
 import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.43"   # shared version across the Mac app + web app
+VERSION        = "14.46"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
 
-# PWA colour palette so the app feels like the same product
-# ANUSA light theme (cream page, dark text, blue primary). The "orange" key name is
-# kept to avoid churn but now holds ANUSA blue.
-C = dict(
-    bg     = "#faf6ec",   # cream page
-    deck   = "#ffffff",   # panels
-    line   = "#e6e0d1",
-    text   = "#242424",
-    muted  = "#6c7176",
-    orange = "#3b4fd6",   # ANUSA blue — primary action
-    prim_d = "#3444c0",   # darker blue for button hover
-    nav    = "#3b4fd6",   # header bar
-    green  = "#1e9e57",
-    amber  = "#e0a52a",
-    red    = "#cc2f2f",
-)
+
+def _resource(name):
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
 
 # ── crypto ────────────────────────────────────────────────────────────────────
 
@@ -170,7 +164,11 @@ class Bridge:
                 data = _decrypt(self._key, msg.payload.decode())
             except Exception:
                 return
-            if data.get("t") != "scan":
+            t = data.get("t")
+            if t == "hello":                       # a phone joined this room → paired
+                self._q.put(("paired", data.get("dev")))
+                return
+            if t != "scan":
                 return
             pair = (data.get("dev"), data.get("seq"))
             if pair in self._seen_s:
@@ -194,387 +192,265 @@ class Bridge:
         except Exception as e:
             self._q.put(("status", "err", str(e)))
 
-# ── App ───────────────────────────────────────────────────────────────────────
 
-class App:
-    def __init__(self, root: tk.Tk):
-        self.root        = root
-        self.q           = queue.Queue()
-        self.bridge      = Bridge(self.q)
-        self._connected  = False
-        self._kb         = None    # lazy: (Controller, Key) from pynput
-        self._hist_rows  = []      # [{ts, id, mode, seq, dev}]
-        self._app_focused = False
-        self._sheet       = None   # sheets.SheetSession once signed in
-        self._sheet_ready = False  # columns configured → ready to check in
+# ── Web-UI bridge (methods here are called from ui.html's JS) ─────────────────
 
-        root.title("ANUSA Scanner")
-        root.configure(bg=C["bg"])
-        root.resizable(False, True)
-        root.geometry("460x620")
+class Api:
+    def __init__(self):
+        self.q = queue.Queue()
+        self.bridge = Bridge(self.q)
+        self.window = None
+        self.mode = "keys"
+        self.focused = False
+        self.connected = False
+        self.room = ""
+        self.broker = DEFAULT_BROKER
+        self.sheet = None            # sheets.SheetSession once signed in
+        self.sheet_ready = False
+        self._kb = None              # lazy pynput (Controller, Key)
+        self._hist = []              # [{ts,id,result,dev,seq}]
 
-        # Dock-icon click restores the window
+    # called once the window + GUI loop are up
+    def attach(self, window):
+        self.window = window
+        threading.Thread(target=self._drain, daemon=True).start()
+        self._emit("version", {"v": VERSION})
+        if sheets.token_available():
+            threading.Thread(target=lambda: self._do_sign_in(False), daemon=True).start()
+        self.start_pairing()   # open to the pairing QR; a phone's "hello" reveals the app
+
+    def start_pairing(self):
+        """Generate a room, connect, and show the pairing QR until a phone says hello."""
+        abc = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # no 0/O/1/I/L
+        self.room = "".join(random.choice(abc) for _ in range(6))
+        self.connected = True
+        self.bridge.connect(self.room, self.broker)
+        self._emit("show_pairing",
+                   {"room": self.room, "img": self._qr_data_url(f"{PWA_URL}?room={self.room}")})
+
+    def new_day(self):
+        """Forget the session — disconnect, drop the loaded sheet/columns, clear history,
+        reset to keystroke mode — and show a fresh pairing QR. Keeps the Google sign-in."""
+        self.bridge.stop()
+        self.sheet_ready = False
+        if self.sheet is not None:
+            self.sheet = sheets.SheetSession(self.sheet.svc)   # fresh session, same auth
+        self._hist = []
+        self.mode = "keys"
+        self._emit("reset", {"signed_in": self.sheet is not None})
+        self.start_pairing()
+
+    def _emit(self, kind, payload=None):
+        if not self.window:
+            return
         try:
-            root.createcommand("tk::mac::ReopenApplication", root.deiconify)
+            self.window.evaluate_js(
+                "window.uiEvent(%s, %s)" % (json.dumps(kind), json.dumps(payload or {})))
         except Exception:
             pass
 
-        self._build_ui()
-        self._recompute_geometry()
-        self._poll_queue()
-        self._poll_focus()
+    # ── queue drain ──────────────────────────────────────────────────────────
+    def _drain(self):
+        while True:
+            ev = self.q.get()
+            try:
+                self._on_event(ev)
+            except Exception:
+                pass
 
-        # Reflect an existing Google sign-in without opening a browser.
-        if sheets.token_available():
-            self._signin_lbl.configure(text="signing in…", fg=C["amber"])
-            threading.Thread(target=self._silent_sign_in, daemon=True).start()
+    def _on_event(self, ev):
+        kind = ev[0]
+        if kind == "status":
+            _, k, text = ev
+            if k == "ok":
+                self.connected = True
+                self._emit("status", {"kind": "ok", "room": self.bridge._room})
+            else:
+                self._emit("status", {"kind": k, "text": text})
+        elif kind == "scan":
+            self._handle_scan(ev[1], ev[2])
+        elif kind == "checkin":
+            self._checkin_result(ev[1], ev[2], ev[3], ev[4])
+        elif kind == "paired":
+            self._emit("paired", {"dev": ev[1]})
 
-    # ── helpers ───────────────────────────────────────────────────────────────
+    # ── scan handling ────────────────────────────────────────────────────────
+    def _handle_scan(self, data, sid):
+        ts = datetime.now().strftime("%H:%M:%S")
+        if self.mode == "sheet":
+            if not self.sheet_ready:
+                self._emit("result", {"status": "error", "id": sid,
+                                      "name": "set up the Google Sheet first", "ts": ts})
+                return
+            self._emit("working", {"id": sid})
+            threading.Thread(target=self._do_checkin, args=(data, sid, ts), daemon=True).start()
+            return
+        # keystroke mode
+        if self.focused:
+            self._record(ts, sid, "test")
+            self._emit("result", {"status": "test", "id": sid, "name": "", "ts": ts})
+            return
+        ok = self._type_id(sid)
+        self._record(ts, sid, "typed" if ok else "error")
+        self._emit("result", {"status": "typed" if ok else "error",
+                              "id": sid, "name": "", "ts": ts})
+        self.bridge.ack(data.get("seq"), data.get("dev"))
 
-    def _sep(self, parent=None):
-        tk.Frame(parent or self.root, height=1, bg=C["line"]).pack(fill="x")
-
-    # ── UI construction ───────────────────────────────────────────────────────
-
-    def _build_ui(self):
-        r = self.root
-
-        # ── Header (ANUSA blue status bar) ────────────────────────────────────
-        hdr = tk.Frame(r, bg=C["nav"])
-        hdr.pack(fill="x")
-        hin = tk.Frame(hdr, bg=C["nav"])
-        hin.pack(fill="x", padx=18, pady=13)
-        tk.Label(hin, text="ANUSA", font=("Menlo", 15, "bold"),
-                 bg=C["nav"], fg="#ffffff").pack(side="left")
-        tk.Label(hin, text=" SCANNER  RECEIVER", font=("Menlo", 15),
-                 bg=C["nav"], fg="#d6ddf7").pack(side="left")
-        tk.Label(hin, text=f"v{VERSION}", font=("Menlo", 10),
-                 bg=C["nav"], fg="#aeb8ec").pack(side="right")
-
-        # ── Setup (collapsible: connection + on-scan target) ─────────────────
-        self._setup_hdr = tk.Frame(r, bg=C["bg"])
-        self._setup_hdr.pack(fill="x", padx=18, pady=(8, 2))
-        self._setup_toggle = tk.Label(
-            self._setup_hdr, text="▾ SETUP", font=("Menlo", 9, "bold"),
-            bg=C["bg"], fg=C["muted"], cursor="hand2")
-        self._setup_toggle.pack(side="left")
-        self._setup_toggle.bind("<Button-1>", lambda _: self._toggle_setup())
-        self._setup_summary = tk.Label(self._setup_hdr, text="", font=("Menlo", 9),
-                                       bg=C["bg"], fg=C["line"])
-        self._setup_summary.pack(side="right")
-
-        self._setup_body = tk.Frame(r, bg=C["bg"])
-        self._setup_body.pack(fill="x")
-        self._build_connection(self._setup_body)
-        self._sep(self._setup_body)
-        self._build_mode_section(self._setup_body)
-        self._sep()
-
-        # ── Status row ────────────────────────────────────────────────────────
-        sr = tk.Frame(r, bg=C["bg"])
-        sr.pack(fill="x", padx=18, pady=9)
-        self._dot = tk.Label(sr, text="●", font=("Menlo", 11),
-                             bg=C["bg"], fg=C["muted"])
-        self._dot.pack(side="left")
-        self._status_lbl = tk.Label(sr, text="not connected", font=("Menlo", 11),
-                                    bg=C["bg"], fg=C["muted"])
-        self._status_lbl.pack(side="left", padx=(7, 0))
-        self._sep()
-
-        # ── Test-mode banner (keystroke mode only; invisible otherwise) ───────
-        self._banner = tk.Label(
-            r, text="  ", font=("Menlo", 10, "bold"),
-            bg=C["bg"], fg=C["bg"], pady=7,
-        )
-        self._banner.pack(fill="x")
-        self._sep()
-
-        # ── Big number display ────────────────────────────────────────────────
-        disp = tk.Frame(r, bg=C["bg"])
-        disp.pack(fill="x", padx=18, pady=(18, 18))
-
-        self._id_lbl = tk.Label(
-            disp, text="·······", font=("Menlo", 46, "bold"),
-            bg=C["bg"], fg=C["line"],
-        )
-        self._id_lbl.pack()
-
-        self._id_sub = tk.Label(
-            disp, text="waiting for first scan", font=("Menlo", 11),
-            bg=C["bg"], fg=C["muted"],
-        )
-        self._id_sub.pack()
-        self._sep()
-
-        # ── Manual entry (type an ID here when a card won't scan) ─────────────
-        man = tk.Frame(r, bg=C["bg"])
-        man.pack(fill="x", padx=18, pady=(8, 6))
-        tk.Label(man, text="MANUAL", font=("Menlo", 9),
-                 bg=C["bg"], fg=C["muted"]).pack(side="left", padx=(0, 8))
-        self._manual_var = tk.StringVar()
-        me = tk.Entry(man, textvariable=self._manual_var, font=("Menlo", 14),
-                      bg=C["bg"], fg=C["text"], insertbackground=C["text"], relief="flat",
-                      highlightthickness=1, highlightbackground=C["line"],
-                      highlightcolor=C["orange"])
-        me.pack(side="left", fill="x", expand=True, ipady=4)
-        me.bind("<Return>", lambda _: self._manual_submit())
-        tk.Button(man, text="Enter", font=("Menlo", 12, "bold"), bg=C["orange"],
-                  fg="#ffffff", activebackground=C["prim_d"], relief="flat", cursor="hand2",
-                  padx=14, pady=4, command=self._manual_submit).pack(side="left", padx=(8, 0))
-        self._sep()
-
-        # ── History ───────────────────────────────────────────────────────────
-        hist_hdr = tk.Frame(r, bg=C["bg"])
-        hist_hdr.pack(fill="x", padx=18, pady=(8, 4))
-        tk.Label(hist_hdr, text="RECENT SCANS", font=("Menlo", 9),
-                 bg=C["bg"], fg=C["muted"]).pack(side="left")
-        tk.Button(
-            hist_hdr, text="download CSV",
-            font=("Menlo", 9), bg=C["bg"], fg=C["muted"],
-            activebackground=C["deck"], relief="flat", cursor="hand2",
-            command=self._download_csv,
-        ).pack(side="right")
-
-        self._hist_box = tk.Listbox(
-            r, font=("Menlo", 12),
-            bg=C["deck"], fg=C["text"], selectbackground=C["line"],
-            activestyle="none", relief="flat", borderwidth=0,
-            highlightthickness=0, height=5,
-        )
-        self._hist_box.pack(fill="x", padx=18, pady=(0, 16))
-
-    def _build_connection(self, parent):
-        conn_bg = tk.Frame(parent, bg=C["deck"])
-        conn_bg.pack(fill="x")
-        conn = tk.Frame(conn_bg, bg=C["deck"])
-        conn.pack(fill="x", padx=18, pady=14)
-
-        tk.Label(conn, text="ROOM CODE", font=("Menlo", 9),
-                 bg=C["deck"], fg=C["muted"]).pack(anchor="w")
-        room_row = tk.Frame(conn, bg=C["deck"])
-        room_row.pack(fill="x", pady=(4, 10))
-        self._room_var = tk.StringVar()
-        self._room_var.trace_add("write", self._auto_upper)
-        room_entry = tk.Entry(
-            room_row, textvariable=self._room_var, font=("Menlo", 20), width=8,
-            bg=C["bg"], fg=C["text"], insertbackground=C["text"], relief="flat",
-            highlightthickness=1, highlightbackground=C["line"], highlightcolor=C["orange"])
-        room_entry.pack(side="left", ipady=6, padx=(0, 10))
-        room_entry.bind("<Return>", lambda _: self._toggle_connect())
-        self._conn_btn = tk.Button(
-            room_row, text="Connect", font=("Menlo", 13, "bold"), bg=C["orange"],
-            fg="#ffffff", activebackground=C["prim_d"], activeforeground="#ffffff",
-            relief="flat", cursor="hand2", padx=16, pady=6, command=self._toggle_connect)
-        self._conn_btn.pack(side="left")
-
-        tk.Label(conn, text="BROKER", font=("Menlo", 9),
-                 bg=C["deck"], fg=C["muted"]).pack(anchor="w")
-        self._broker_var = tk.StringVar(value=DEFAULT_BROKER)
-        tk.Entry(
-            conn, textvariable=self._broker_var, font=("Menlo", 10), bg=C["bg"],
-            fg=C["muted"], insertbackground=C["text"], relief="flat", highlightthickness=1,
-            highlightbackground=C["line"], highlightcolor=C["orange"]).pack(
-                fill="x", ipady=3, pady=(4, 0))
-
-        tk.Button(
-            conn, text="Show pairing QR  ·  phone scans to join", font=("Menlo", 11),
-            bg=C["deck"], fg=C["orange"], activebackground=C["bg"], relief="solid", bd=1,
-            highlightbackground=C["line"], cursor="hand2", pady=6,
-            command=self._show_pair_qr).pack(fill="x", pady=(10, 0))
-
-    def _build_mode_section(self, r):
-        mode_bg = tk.Frame(r, bg=C["deck"])
-        mode_bg.pack(fill="x")
-        mode = tk.Frame(mode_bg, bg=C["deck"])
-        mode.pack(fill="x", padx=18, pady=(10, 4))
-        tk.Label(mode, text="ON SCAN", font=("Menlo", 9),
-                 bg=C["deck"], fg=C["muted"]).pack(anchor="w")
-
-        self._mode_var = tk.StringVar(value="keys")
-        row = tk.Frame(mode, bg=C["deck"])
-        row.pack(fill="x", pady=(4, 0))
-        for val, lbl in (("keys", "Type keystrokes"), ("sheet", "Google Sheet")):
-            tk.Radiobutton(
-                row, text=lbl, value=val, variable=self._mode_var,
-                command=self._on_mode_change, font=("Menlo", 11),
-                bg=C["deck"], fg=C["text"], selectcolor=C["bg"],
-                activebackground=C["deck"], activeforeground=C["text"],
-                highlightthickness=0, bd=0,
-            ).pack(side="left", padx=(0, 16))
-
-        # Google Sheet config panel — shown only in sheet mode.
-        self._sheet_wrap = tk.Frame(mode_bg, bg=C["deck"])
-        sp = tk.Frame(self._sheet_wrap, bg=C["deck"])
-        sp.pack(fill="x", padx=18, pady=(2, 12))
-
-        signin = tk.Frame(sp, bg=C["deck"])
-        signin.pack(fill="x", pady=(2, 6))
-        self._signin_btn = tk.Button(
-            signin, text="Sign in with Google", font=("Menlo", 11),
-            bg=C["line"], fg=C["text"], activebackground=C["deck"],
-            relief="flat", cursor="hand2", padx=10, pady=4, command=self._sign_in,
-        )
-        self._signin_btn.pack(side="left")
-        self._signin_lbl = tk.Label(signin, text="not signed in", font=("Menlo", 10),
-                                    bg=C["deck"], fg=C["muted"])
-        self._signin_lbl.pack(side="left", padx=(10, 0))
-
-        url_row = tk.Frame(sp, bg=C["deck"])
-        url_row.pack(fill="x", pady=(2, 6))
-        self._url_var = tk.StringVar()
-        tk.Entry(url_row, textvariable=self._url_var, font=("Menlo", 10),
-                 bg=C["bg"], fg=C["text"], insertbackground=C["text"], relief="flat",
-                 highlightthickness=1, highlightbackground=C["line"],
-                 highlightcolor=C["orange"]).pack(side="left", fill="x", expand=True, ipady=3)
-        self._load_btn = tk.Button(
-            url_row, text="Load", font=("Menlo", 11, "bold"), bg=C["orange"],
-            fg="#ffffff", activebackground=C["prim_d"], relief="flat",
-            cursor="hand2", padx=12, pady=4, command=self._load_sheet,
-        )
-        self._load_btn.pack(side="left", padx=(8, 0))
-
-        self._col_vars = {"id": tk.StringVar(), "tick": tk.StringVar(),
-                          "name": tk.StringVar()}
-        self._col_menus = {}
-        for key, lbl in (("id", "ID column"), ("tick", "Tick column"),
-                         ("name", "Name column")):
-            crow = tk.Frame(sp, bg=C["deck"])
-            crow.pack(fill="x", pady=1)
-            tk.Label(crow, text=lbl, font=("Menlo", 9), bg=C["deck"], fg=C["muted"],
-                     width=11, anchor="w").pack(side="left")
-            om = tk.OptionMenu(crow, self._col_vars[key], "")
-            om.configure(font=("Menlo", 10), bg=C["bg"], fg=C["text"],
-                         activebackground=C["line"], highlightthickness=0,
-                         relief="flat", anchor="w")
-            om["menu"].configure(bg=C["deck"], fg=C["text"])
-            om.pack(side="left", fill="x", expand=True)
-            self._col_menus[key] = om
-        for v in self._col_vars.values():
-            v.trace_add("write", lambda *_: self._apply_columns())
-
-        status_row = tk.Frame(sp, bg=C["deck"])
-        status_row.pack(fill="x", pady=(6, 0))
-        self._sheet_status = tk.Label(status_row, text="sign in, then load a sheet",
-                                      font=("Menlo", 10), bg=C["deck"], fg=C["muted"],
-                                      anchor="w", justify="left")
-        self._sheet_status.pack(side="left", fill="x", expand=True)
-        self._sync_btn = tk.Button(
-            status_row, text="↻ Re-sync", font=("Menlo", 10), bg=C["line"], fg=C["text"],
-            activebackground=C["deck"], relief="flat", cursor="hand2", padx=8, pady=2,
-            command=self._sync)
-        self._sync_btn.pack(side="right")
-
-    # ── Focus polling (test-mode banner is keystroke-mode only) ───────────────
-
-    def _is_app_focused(self) -> bool:
+    def _do_checkin(self, data, sid, ts):
         try:
-            return self.root.focus_displayof() is not None
+            res = self.sheet.check_in(sid)
+        except Exception as e:
+            res = {"status": "error", "name": str(e)}
+        self.q.put(("checkin", data, sid, ts, res))
+
+    def _checkin_result(self, data, sid, ts, res):
+        status = res.get("status", "error")
+        name = res.get("name", "")
+        self._record(ts, sid, status)
+        self._emit("result", {"status": status, "id": sid,
+                              "name": name if status != "error" else "", "ts": ts})
+        self.bridge.send_status(data.get("seq"), data.get("dev"), status, name, sid)
+
+    def _type_id(self, sid):
+        try:
+            if self._kb is None:
+                from pynput.keyboard import Controller, Key
+                self._kb = (Controller(), Key)
+            ctrl, Key = self._kb
+            ctrl.type(sid)
+            ctrl.press(Key.enter)
+            ctrl.release(Key.enter)
+            return True
         except Exception:
             return False
 
-    def _poll_focus(self):
-        focused = self._is_app_focused()
-        if focused != self._app_focused:
-            self._app_focused = focused
-        self._update_banner(focused)
-        self.root.after(200, self._poll_focus)
+    def _record(self, ts, sid, label):
+        self._hist.insert(0, {"ts": ts, "id": sid, "result": label, "dev": "", "seq": ""})
+        self._log_csv(ts, sid, label)
 
-    def _update_banner(self, focused: bool):
-        if focused and self._mode_var.get() == "keys":
-            self._banner.configure(
-                text="⚠   TEST MODE  —  window focused: scans display here, not typed   ⚠",
-                bg=C["amber"], fg="#1a1005",
-            )
-        else:
-            self._banner.configure(text="  ", bg=C["bg"], fg=C["bg"])
-
-    def _on_mode_change(self):
-        if self._mode_var.get() == "sheet":
-            self._sheet_wrap.pack(fill="x")
-        else:
-            self._sheet_wrap.pack_forget()
-        self._recompute_geometry()
-        self._update_banner(self._app_focused)
-
-    def _toggle_setup(self):
-        if self._setup_body.winfo_ismapped():
-            self._setup_body.pack_forget()
-            self._setup_toggle.configure(text="▸ SETUP")
-            self._update_setup_summary()
-        else:
-            self._setup_body.pack(fill="x", after=self._setup_hdr)
-            self._setup_toggle.configure(text="▾ SETUP")
-            self._setup_summary.configure(text="")
-        self._recompute_geometry()
-
-    def _update_setup_summary(self):
-        room = self._room_var.get().strip() or "—"
-        mode = "Sheet" if self._mode_var.get() == "sheet" else "Keys"
-        conn = "●" if self._connected else "○"
-        self._setup_summary.configure(text=f"{conn} {room} · {mode}")
-
-    def _recompute_geometry(self):
-        if not self._setup_body.winfo_ismapped():
-            h = 490
-        elif self._mode_var.get() == "sheet":
-            h = 915
-        else:
-            h = 695
-        self.root.geometry(f"460x{h}")
-
-    # ── Connection ────────────────────────────────────────────────────────────
-
-    def _auto_upper(self, *_):
-        v = self._room_var.get()
-        up = v.upper()
-        if v != up:
-            self._room_var.set(up)
-
-    def _toggle_connect(self):
-        if not self._connected:
-            room = self._room_var.get().strip().upper()
-            if not room:
-                self._set_status("err", "enter a room code first")
-                return
-            self._connected = True
-            self._conn_btn.configure(text="Disconnect")
-            self._set_status("wait", "connecting…")
-            broker = self._broker_var.get().strip() or DEFAULT_BROKER
-            self.bridge.connect(room, broker)
-        else:
-            self._connected = False
-            self.bridge.stop()
-            self._conn_btn.configure(text="Connect")
-            self._set_status("off", "not connected")
-        if not self._setup_body.winfo_ismapped():
-            self._update_setup_summary()
-
-    def _set_status(self, kind: str, text: str):
-        col = {"ok": C["green"], "wait": C["amber"],
-               "err": C["red"],  "off": C["muted"]}.get(kind, C["muted"])
-        self._dot.configure(fg=col)
-        self._status_lbl.configure(text=text, fg=col)
-
-    # ── Pairing QR (the Mac generates the room; the phone scans to join) ──────
-    def _show_pair_qr(self):
-        import random
-        abc = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"          # no 0/O/1/I/L
-        room = "".join(random.choice(abc) for _ in range(6))
-        self._room_var.set(room)
-        # (re)connect the Mac to this freshly generated room
-        self._connected = True
-        self._conn_btn.configure(text="Disconnect")
-        self._set_status("wait", "connecting…")
-        self.bridge.connect(room, self._broker_var.get().strip() or DEFAULT_BROKER)
+    def _log_csv(self, ts, sid, label):
         try:
-            png = self._make_qr(f"{PWA_URL}?room={room}")
-        except Exception as e:
-            self._set_status("err", f"QR failed: {e}")
-            return
-        self._pair_window(room, png)
+            needs_header = not LOG_PATH.exists()
+            with open(LOG_PATH, "a", newline="") as f:
+                w = csv.writer(f)
+                if needs_header:
+                    w.writerow(["timestamp", "id", "result"])
+                w.writerow([ts, sid, label])
+        except Exception:
+            pass
 
-    def _make_qr(self, url):
-        import tempfile
+    # ── JS-callable methods ──────────────────────────────────────────────────
+    def get_state(self):
+        self._emit("version", {"v": VERSION})
+        return {"version": VERSION}
+
+    def set_focus(self, f):
+        self.focused = bool(f)
+
+    def set_mode(self, m):
+        self.mode = m if m in ("keys", "sheet") else "keys"
+
+    def connect(self, room, broker):
+        room = (room or "").strip().upper()
+        if not room:
+            self._emit("status", {"kind": "err", "text": "enter a room code"})
+            return
+        self.room = room
+        self.broker = (broker or "").strip() or DEFAULT_BROKER
+        self.connected = True
+        self.bridge.connect(room, self.broker)
+
+    def disconnect(self):
+        self.connected = False
+        self.bridge.stop()
+        self._emit("status", {"kind": "off"})
+
+    def sign_in(self):
+        threading.Thread(target=lambda: self._do_sign_in(True), daemon=True).start()
+
+    def _do_sign_in(self, interactive):
+        try:
+            svc = sheets.build_service(interactive=interactive)
+            self.sheet = sheets.SheetSession(svc)
+            self._emit("signed_in", {"ok": True})
+        except Exception as e:
+            if interactive:
+                self._emit("sheet_status", {"text": f"sign-in failed: {str(e)[:40]}", "kind": "bad"})
+
+    def load_sheet(self, url):
+        if not self.sheet:
+            self._emit("sheet_status", {"text": "sign in first", "kind": "bad"})
+            return
+        threading.Thread(target=self._do_load, args=(url,), daemon=True).start()
+
+    def _do_load(self, url):
+        try:
+            info = self.sheet.open(url)
+            guess = self.sheet.guess_columns()
+            self._emit("sheet_loaded", {"tab": info["tab"], "rows": info["rows"],
+                                       "headers": info["headers"], "guess": list(guess)})
+        except Exception as e:
+            self._emit("sheet_status", {"text": f"load failed: {str(e)[:44]}", "kind": "bad"})
+
+    def set_columns(self, id_col, tick_col, name_col):
+        if not self.sheet or not self.sheet.headers:
+            return
+        try:
+            self.sheet.set_columns(id_col, tick_col,
+                                   None if name_col in ("", "(none)") else name_col)
+            self.sheet_ready = True
+            self._emit("sheet_status", {"text": f"ready · {self.sheet.tab} · {id_col} → {tick_col}",
+                                       "kind": "ok"})
+        except Exception as e:
+            self.sheet_ready = False
+            self._emit("sheet_status", {"text": f"column error: {e}", "kind": "bad"})
+
+    def sync(self):
+        if not self.sheet or self.sheet.sid is None:
+            self._emit("sheet_status", {"text": "load a sheet first", "kind": "warn"})
+            return
+        threading.Thread(target=self._do_sync, daemon=True).start()
+
+    def _do_sync(self):
+        try:
+            self.sheet.refresh()
+            n = max(0, len(self.sheet.values) - 1)
+            self._emit("sheet_status", {"text": f"re-synced · {self.sheet.tab} · {n} rows", "kind": "ok"})
+        except Exception as e:
+            self._emit("sheet_status", {"text": f"sync failed: {str(e)[:40]}", "kind": "bad"})
+
+    def manual(self, sid):
+        sid = "".join(ch for ch in str(sid or "") if ch.isdigit())
+        if not sid:
+            return
+        self._handle_scan({"seq": None, "dev": "manual"}, sid)
+
+    def download_csv(self):
+        if not self._hist:
+            return
+        try:
+            fn = f"anusa_scans_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+            path = self.window.create_file_dialog(webview.SAVE_DIALOG, save_filename=fn)
+            if not path:
+                return
+            if isinstance(path, (list, tuple)):
+                path = path[0]
+            rows = ["timestamp,id,result"]
+            for h in reversed(self._hist):
+                rows.append(f"{h['ts']},{h['id']},{h['result']}")
+            with open(path, "w", newline="") as f:
+                f.write("\n".join(rows) + "\n")
+        except Exception:
+            pass
+
+    def pair_qr(self):
+        """QR for the CURRENT room (the 'Pair a phone' button in the main UI — lets an
+        extra phone join the same session)."""
+        if not self.room:
+            self.start_pairing()
+        return {"room": self.room, "img": self._qr_data_url(f"{PWA_URL}?room={self.room}")}
+
+    def _qr_data_url(self, url):
         import qrcode
         from qrcode.image.styledpil import StyledPilImage
         from qrcode.image.styles.moduledrawers import RoundedModuleDrawer
@@ -584,297 +460,26 @@ class App:
         qr.add_data(url)
         qr.make(fit=True)
         img = qr.make_image(
-            image_factory=StyledPilImage,
-            module_drawer=RoundedModuleDrawer(),
-            color_mask=SolidFillColorMask(front_color=(59, 79, 214),
-                                          back_color=(255, 255, 255)))
-        path = os.path.join(tempfile.gettempdir(), "anusa_pair_qr.png")
-        img.convert("RGB").save(path)
-        return path
-
-    def _pair_window(self, room, png):
-        win = tk.Toplevel(self.root)
-        win.title("Pair phone")
-        win.configure(bg=C["bg"])
-        win.resizable(False, False)
-        tk.Label(win, text="Scan with your phone camera", font=("Menlo", 14, "bold"),
-                 bg=C["bg"], fg=C["text"]).pack(padx=30, pady=(22, 2))
-        tk.Label(win, text="Opens the scanner already paired — nothing to type.",
-                 font=("Menlo", 10), bg=C["bg"], fg=C["muted"]).pack(padx=30)
-        photo = tk.PhotoImage(file=png)          # Tk 8.6 reads PNG directly
-        img_lbl = tk.Label(win, image=photo, bg=C["bg"], bd=0)
-        img_lbl.image = photo                    # keep a reference from GC
-        img_lbl.pack(padx=30, pady=16)
-        tk.Label(win, text=f"room {room}", font=("Menlo", 13, "bold"),
-                 bg=C["bg"], fg=C["orange"]).pack(pady=(0, 22))
-
-    # ── Google Sheet setup ────────────────────────────────────────────────────
-
-    def _sign_in(self):
-        self._signin_lbl.configure(text="opening browser…", fg=C["amber"])
-        self._signin_btn.configure(state="disabled")
-        threading.Thread(target=self._do_sign_in, args=(True,), daemon=True).start()
-
-    def _silent_sign_in(self):
-        self._do_sign_in(interactive=False)
-
-    def _do_sign_in(self, interactive):
-        try:
-            svc = sheets.build_service(interactive=interactive)
-            self.q.put(("sheet_auth", svc, None))
-        except Exception as e:
-            self.q.put(("sheet_auth", None, str(e)))
-
-    def _load_sheet(self):
-        if not self._sheet:
-            self._sheet_status.configure(text="sign in first", fg=C["red"])
-            return
-        url = self._url_var.get().strip()
-        if not url:
-            self._sheet_status.configure(text="paste a sheet URL", fg=C["amber"])
-            return
-        self._sheet_status.configure(text="loading…", fg=C["amber"])
-        self._load_btn.configure(state="disabled")
-        threading.Thread(target=self._do_load, args=(url,), daemon=True).start()
-
-    def _do_load(self, url):
-        try:
-            info = self._sheet.open(url)
-            guess = self._sheet.guess_columns()
-            self.q.put(("sheet_loaded", info, guess))
-        except Exception as e:
-            self.q.put(("sheet_error", str(e)))
-
-    def _sync(self):
-        """Re-read the sheet so ticks set elsewhere (other stations / manual edits)
-        are reflected, without losing the loaded columns."""
-        if not self._sheet or self._sheet.sid is None:
-            self._sheet_status.configure(text="load a sheet first", fg=C["amber"])
-            return
-        self._sheet_status.configure(text="re-syncing…", fg=C["amber"])
-        self._sync_btn.configure(state="disabled")
-        threading.Thread(target=self._do_sync, daemon=True).start()
-
-    def _do_sync(self):
-        try:
-            self._sheet.refresh()
-            self.q.put(("sheet_synced", self._sheet.tab, max(0, len(self._sheet.values) - 1)))
-        except Exception as e:
-            self.q.put(("sheet_error", str(e)))
-
-    def _populate_columns(self, headers, guess):
-        id_g, tick_g, name_g = guess
-        self._fill_menu("id", headers, id_g or (headers[0] if headers else ""))
-        self._fill_menu("tick", headers, tick_g or "")
-        self._fill_menu("name", ["(none)"] + list(headers), name_g or "(none)")
-
-    def _fill_menu(self, key, options, selected):
-        om = self._col_menus[key]
-        var = self._col_vars[key]
-        menu = om["menu"]
-        menu.delete(0, "end")
-        for opt in options:
-            menu.add_command(label=opt, command=lambda v=opt, var=var: var.set(v))
-        var.set(selected)   # fires _apply_columns via trace
-
-    def _apply_columns(self):
-        if not self._sheet or not self._sheet.headers:
-            return
-        idc = self._col_vars["id"].get()
-        tickc = self._col_vars["tick"].get()
-        namec = self._col_vars["name"].get()
-        if not idc or not tickc:
-            self._sheet_ready = False
-            return
-        try:
-            self._sheet.set_columns(idc, tickc,
-                                    None if namec in ("", "(none)") else namec)
-            self._sheet_ready = True
-            self._sheet_status.configure(
-                text=f"ready · {self._sheet.tab} · check in on {idc} → {tickc}",
-                fg=C["green"])
-        except Exception as e:
-            self._sheet_ready = False
-            self._sheet_status.configure(text=f"column error: {e}", fg=C["red"])
-
-    # ── Scan handling ─────────────────────────────────────────────────────────
-
-    def _manual_submit(self):
-        """Process a hand-typed ID exactly like a scan (check-in or keystroke)."""
-        sid = "".join(ch for ch in self._manual_var.get() if ch.isdigit())
-        if not sid:
-            return
-        self._manual_var.set("")
-        self._handle_scan({"seq": None, "dev": "manual"}, sid)
-
-    def _handle_scan(self, data: dict, sid: str):
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._id_lbl.configure(text="u" + sid, fg=C["text"])
-
-        if self._mode_var.get() == "sheet":
-            if not self._sheet_ready:
-                self._id_sub.configure(text="set up the Google Sheet first", fg=C["amber"])
-                return
-            self._id_sub.configure(text="checking in…", fg=C["muted"])
-            threading.Thread(target=self._do_checkin, args=(data, sid, ts),
-                             daemon=True).start()
-            return
-
-        # keystroke mode
-        if self._is_app_focused():
-            self._id_sub.configure(text=f"test mode — not typed   {ts}", fg=C["amber"])
-            mode = "test"
-        else:
-            mode = self._type_id(sid, ts)
-        self._record(ts, sid, mode, data)
-        self.bridge.ack(data.get("seq"), data.get("dev"))
-
-    def _do_checkin(self, data, sid, ts):
-        try:
-            res = self._sheet.check_in(sid)
-        except Exception as e:
-            res = {"status": "error", "name": "", "err": str(e)}
-        self.q.put(("checkin", data, sid, ts, res))
-
-    def _checkin_result(self, data, sid, ts, res):
-        status = res.get("status", "error")
-        name = res.get("name", "")
-        colour = {"checked-in": C["green"], "already": C["amber"],
-                  "not-registered": C["red"], "error": C["red"]}.get(status, C["muted"])
-        label = {"checked-in": "checked in ✓", "already": "already checked in",
-                 "not-registered": "not registered", "error": "sheet error — stopped"}.get(
-                     status, status)
-        sub = label + (f"  ·  {name}" if name and status != "error" else "")
-        self._id_sub.configure(text=f"{sub}   {ts}", fg=colour)
-        self._record(ts, sid, status, data)
-        self.bridge.send_status(data.get("seq"), data.get("dev"), status, name, sid)
-
-    def _type_id(self, sid: str, ts: str) -> str:
-        try:
-            if self._kb is None:
-                from pynput.keyboard import Controller, Key
-                self._kb = (Controller(), Key)
-            ctrl, Key = self._kb
-            ctrl.type(sid)
-            ctrl.press(Key.enter)
-            ctrl.release(Key.enter)
-            self._id_sub.configure(text=f"typed ✓   {ts}", fg=C["green"])
-            return "typed"
-        except ImportError:
-            self._id_sub.configure(
-                text="pynput not installed — pip install pynput", fg=C["red"])
-            return "error"
-        except Exception as e:
-            msg = str(e)
-            if "accessibility" in msg.lower() or "permission" in msg.lower():
-                self._id_sub.configure(
-                    text="⚠ grant Accessibility in System Settings → Privacy → Accessibility",
-                    fg=C["red"])
-            else:
-                self._id_sub.configure(text=f"error: {msg}   {ts}", fg=C["red"])
-            return "error"
-
-    # ── Persistence ───────────────────────────────────────────────────────────
-
-    def _record(self, ts: str, sid: str, label: str, data: dict):
-        icon = {"typed": "✓", "test": "◉", "checked-in": "✓", "already": "•",
-                "not-registered": "✗", "error": "✗"}.get(label, "?")
-        self._hist_box.insert(0, f"  {ts}    u{sid}    {icon} {label}")
-        if self._hist_box.size() > 50:
-            self._hist_box.delete(50)
-        self._hist_rows.insert(0, {
-            "ts": ts, "id": sid, "mode": label,
-            "seq": data.get("seq"), "dev": data.get("dev"),
-        })
-        self._log_csv(ts, sid, label, data)
-
-    def _log_csv(self, ts: str, sid: str, mode: str, data: dict):
-        try:
-            needs_header = not LOG_PATH.exists()
-            with open(LOG_PATH, "a", newline="") as f:
-                w = csv.writer(f)
-                if needs_header:
-                    w.writerow(["timestamp", "id", "result", "device", "seq"])
-                w.writerow([ts, sid, mode, data.get("dev", ""), data.get("seq", "")])
-        except Exception:
-            pass
-
-    def _download_csv(self):
-        if not self._hist_rows:
-            self._id_sub.configure(text="no scans to download yet", fg=C["amber"])
-            return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            initialfile=f"anusa_scans_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            filetypes=[("CSV files", "*.csv")], title="Download scans CSV")
-        if not path:
-            return
-        rows = ["timestamp,id,result,device,seq"]
-        for h in reversed(self._hist_rows):
-            rows.append(
-                f"{h['ts']},{h['id']},{h['mode']},{h.get('dev','')},{h.get('seq','')}")
-        try:
-            with open(path, "w", newline="") as f:
-                f.write("\n".join(rows) + "\n")
-            self._id_sub.configure(
-                text=f"saved CSV · {len(self._hist_rows)} rows", fg=C["green"])
-        except Exception as e:
-            self._id_sub.configure(text=f"CSV save failed: {e}", fg=C["red"])
-
-    # ── Main loop bridge ──────────────────────────────────────────────────────
-
-    def _poll_queue(self):
-        try:
-            while True:
-                ev = self.q.get_nowait()
-                kind = ev[0]
-                if kind == "status":
-                    self._set_status(ev[1], ev[2])
-                elif kind == "scan":
-                    self._handle_scan(ev[1], ev[2])
-                elif kind == "checkin":
-                    self._checkin_result(ev[1], ev[2], ev[3], ev[4])
-                elif kind == "sheet_auth":
-                    self._on_sheet_auth(ev[1], ev[2])
-                elif kind == "sheet_loaded":
-                    self._load_btn.configure(state="normal")
-                    self._populate_columns(ev[1]["headers"], ev[2])
-                elif kind == "sheet_synced":
-                    self._sync_btn.configure(state="normal")
-                    self._sheet_status.configure(
-                        text=f"re-synced · {ev[1]} · {ev[2]} rows", fg=C["green"])
-                elif kind == "sheet_error":
-                    self._load_btn.configure(state="normal")
-                    self._sync_btn.configure(state="normal")
-                    self._sheet_status.configure(text=f"failed: {ev[1][:44]}",
-                                                 fg=C["red"])
-        except queue.Empty:
-            pass
-        self.root.after(80, self._poll_queue)
-
-    def _on_sheet_auth(self, svc, err):
-        self._signin_btn.configure(state="normal")
-        if svc is not None:
-            self._sheet = sheets.SheetSession(svc)
-            self._signin_lbl.configure(text="signed in ✓", fg=C["green"])
-        else:
-            self._signin_lbl.configure(text="not signed in", fg=C["muted"])
-            if err and "not signed in" not in err:
-                self._sheet_status.configure(text=f"sign-in failed: {err[:44]}", fg=C["red"])
+            image_factory=StyledPilImage, module_drawer=RoundedModuleDrawer(),
+            color_mask=SolidFillColorMask(front_color=(59, 79, 214), back_color=(255, 255, 255)))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def _selftest():
-    """Headless check that the Google stack is importable + buildable in this
-    (possibly frozen) build. Exits 0 on success. Needs a cached token."""
+    """Headless check that every backend dep imports + builds in this (possibly
+    frozen) build. Exits 0 on success. Needs a cached Google token."""
     try:
         svc = sheets.build_service(interactive=False)
-        svc.spreadsheets()   # touch the discovery-built resource
-        import qrcode  # noqa: F401  — pairing QR
+        svc.spreadsheets()
+        import qrcode  # noqa: F401
         from qrcode.image.styledpil import StyledPilImage  # noqa: F401
         from qrcode.image.styles.moduledrawers import RoundedModuleDrawer  # noqa: F401
-        print("SELFTEST OK: google libs + sheets service + qrcode")
+        import webview as _wv  # noqa: F401
+        print("SELFTEST OK: google + sheets + qrcode + pywebview")
         return 0
     except Exception as e:
         print(f"SELFTEST FAIL: {type(e).__name__}: {e}")
@@ -885,16 +490,12 @@ def main():
     if "--selftest" in sys.argv:
         sys.exit(_selftest())
 
-    root = tk.Tk()
-    try:
-        # Suppress the default Tk console window on macOS
-        root.tk.call("::tk::unsupported::MacWindowStyle", "style",
-                     root._w, "document", "closeBox miniaturizeBox")
-    except Exception:
-        pass
-
-    App(root)
-    root.mainloop()
+    api = Api()
+    html = open(_resource("ui.html"), encoding="utf-8").read()
+    window = webview.create_window(
+        "ANUSA Scanner", html=html, js_api=api,
+        width=940, height=720, min_size=(820, 600), background_color="#faf6ec")
+    webview.start(api.attach, window)
 
 
 if __name__ == "__main__":

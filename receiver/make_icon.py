@@ -18,11 +18,12 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ── palette (matches the PWA) ─────────────────────────────────────────────────
-BG_TOP   = (22, 29, 37)     # #161d25
-BG_BOT   = (10, 13, 17)     # #0a0d11
-ORANGE   = (255, 122, 26)   # #ff7a1a
-ORANGE_L = (255, 156, 66)   # brighter core for the beam glow
-INK      = (240, 245, 248)  # near-white digits
+# ANUSA blue-and-white icon: blue squircle, white reticle + number + beam.
+BG_TOP   = (74, 96, 231)    # ANUSA blue (lighter top)
+BG_BOT   = (49, 63, 191)    # deeper blue (bottom)
+ORANGE   = (255, 255, 255)  # reticle + "u" — white (name kept to avoid churn)
+ORANGE_L = (255, 255, 255)  # beam core — white
+INK      = (255, 255, 255)  # digits — white
 RIM      = (255, 255, 255)  # subtle rim light
 
 NUMBER = "8221537"          # sample ANU student number

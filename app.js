@@ -110,6 +110,7 @@ async function connectBridge() {
     state.connected = true;
     setStatus('ok', 'bridge connected');
     client.subscribe(topicBase() + '/ack', { qos: 1 });
+    sendHello();   // tell the Mac a phone has paired to this room
   });
   client.on('reconnect', () => { state.connected = false; setStatus('wait', 'reconnecting…'); });
   client.on('close', () => { state.connected = false; if (state.settings.mode === 'bridge') setStatus('err', 'bridge offline'); });
@@ -150,6 +151,14 @@ async function connectBridge() {
       }
     } catch (e) { /* wrong room / stray traffic */ }
   });
+}
+
+async function sendHello() {
+  if (!state.client) return;
+  try {
+    const payload = await encryptJSON({ t: 'hello', dev: state.deviceId });
+    state.client.publish(topicBase() + '/scan', payload, { qos: 1 });
+  } catch (e) { /* not fatal */ }
 }
 
 async function sendScan(id, source) {
@@ -793,6 +802,58 @@ function refreshChrome() {
   $('#hint').textContent = 'Align the student card in the frame';
 }
 
+// Extract a room code from a scanned string — either a …/?room=XXXX URL or a bare code.
+function parseRoom(text) {
+  const s = String(text || '');
+  const m = s.match(/[?&]room=([A-Za-z0-9]+)/i) || s.match(/^\s*([A-Za-z0-9]{5,12})\s*$/);
+  return m ? m[1].toUpperCase() : null;
+}
+
+function setGateMode(mode) {
+  const desc = $('#gateDesc'), btn = $('#goBtn');
+  if (mode === 'pair') {
+    desc.textContent = 'Point your camera at the pairing QR shown on the ANUSA Scanner receiver.';
+    btn.textContent = 'Scan pairing code';
+  } else {
+    desc.textContent = 'Frame the number on a student ID; each confirmed read is checked in on the receiver.';
+    btn.textContent = 'Start scanning';
+  }
+}
+
+// Read the receiver's pairing QR (a …/?room=XXXX URL) from the camera. Resolves the room.
+function scanPairingQR() {
+  const video = $('#video');
+  const cv = document.createElement('canvas');
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  setReadout('', 'point at the receiver QR…', '');
+  $('#pairManual').style.display = 'block';
+  return new Promise((resolve) => {
+    state._pairResolve = resolve;
+    (function tick() {
+      if (!state._pairResolve) return;
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (vw && vh && typeof jsQR === 'function') {
+        const w = Math.min(600, vw), h = Math.round(vh * w / vw);
+        cv.width = w; cv.height = h;
+        ctx.drawImage(video, 0, 0, w, h);
+        try {
+          const img = ctx.getImageData(0, 0, w, h);
+          const code = jsQR(img.data, w, h, { inversionAttempts: 'dontInvert' });
+          const room = code && parseRoom(code.data);
+          if (room) { finishPair(room); return; }
+        } catch (e) { /* transient */ }
+      }
+      requestAnimationFrame(tick);
+    })();
+  });
+}
+function finishPair(room) {
+  const r = state._pairResolve;
+  state._pairResolve = null;
+  $('#pairManual').style.display = 'none';
+  if (r) r(room);
+}
+
 async function onStart() {
   const err = $('#gateErr');
   err.style.display = 'none';
@@ -801,7 +862,16 @@ async function onStart() {
   try {
     await startCamera();
     $('#gate').style.display = 'none';
-    connectBridge();          // don't block scanning on the relay
+    if (state.needPairing) {
+      const room = await scanPairingQR();      // scan the receiver's QR first
+      if (room) {
+        state.settings.room = room; saveSettings(state.settings);
+        state.needPairing = false; refreshChrome();
+        toast('Paired · room ' + room);
+        connectBridge();                       // join the room + say hello
+      }
+    }
+    if (!state.connected) connectBridge();
     await initOCR();
     startScanning();
   } catch (e) {
@@ -855,6 +925,12 @@ function onSave() {
 function wireUI() {
   $('#goBtn').addEventListener('click', onStart);
   $('#pauseBtn').addEventListener('click', onPause);
+  $('#pairManual').addEventListener('click', () => {
+    const v = prompt('Enter the room code shown on the receiver:');
+    if (v == null) return;
+    const room = parseRoom(v) || v.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 12);
+    if (room) finishPair(room);
+  });
   $('#gearBtn').addEventListener('click', openSheet);
   $('#roomChip').addEventListener('click', openSheet);
   $('#sheetBack').addEventListener('click', closeSheet);
@@ -908,8 +984,15 @@ function applyRoomFromURL() {
 window.addEventListener('load', () => {
   wireUI();
   const paired = applyRoomFromURL();
+  state.needPairing = !paired;   // no ?room deep-link → scan the receiver's QR to pair
   refreshChrome();
   renderHistory();
-  if (paired) toast('Paired · room ' + state.settings.room);
+  setGateMode(paired ? 'scan' : 'pair');
+  if (paired) {
+    // Deep-link (or native-camera scan of the receiver QR): join the relay right away so
+    // the Mac's pairing screen clears the moment this phone opens.
+    toast('Paired · room ' + state.settings.room);
+    connectBridge();
+  }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 });

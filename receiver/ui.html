@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ANUSA Scanner — Receiver</title>
+<style>
+  :root{
+    --bg:#faf6ec; --panel:#ffffff; --line:#e7e1d2; --line2:#efeadd;
+    --text:#232427; --muted:#767b82; --faint:#b7b1a2;
+    --blue:#3b4fd6; --blue-d:#3141bf; --blue-soft:#eef0fd; --sky:#5a9be9;
+    --ok:#1e9e57; --ok-soft:#e6f6ee; --warn:#c07d0a; --warn-soft:#fbf1dd;
+    --bad:#d23b3b; --bad-soft:#fbe8e8;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+    --shadow:0 1px 2px rgba(30,30,40,.05),0 6px 18px rgba(30,30,50,.06);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;
+       -webkit-font-smoothing:antialiased;overflow:hidden}
+  button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
+  input,select{font:inherit;color:inherit}
+  .app{display:flex;flex-direction:column;height:100vh}
+
+  /* ── header ─────────────────────────────── */
+  header{display:flex;align-items:center;gap:14px;padding:0 20px;height:56px;
+         background:var(--blue);color:#fff;flex:none}
+  header .brand{font-family:var(--mono);letter-spacing:.16em;font-size:15px}
+  header .brand b{font-weight:700}
+  header .brand span{opacity:.72;margin-left:2px}
+  header .spacer{flex:1}
+  header .conn{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.14);
+       border:1px solid rgba(255,255,255,.28);border-radius:999px;padding:5px 12px;
+       font-family:var(--mono);font-size:12.5px;letter-spacing:.06em}
+  header .conn .dot{width:8px;height:8px;border-radius:50%;background:#ffd27a}
+  header .conn.on .dot{background:#67e4a0}
+  header .conn.off .dot{background:rgba(255,255,255,.5)}
+  header .ver{opacity:.62;font-family:var(--mono);font-size:12px}
+  header .hbtn{border:1px solid rgba(255,255,255,.42);color:#fff;border-radius:8px;
+       padding:5px 12px;font-size:12.5px;font-weight:600}
+  header .hbtn:hover{background:rgba(255,255,255,.15)}
+
+  /* ── body: two columns ─────────────────── */
+  main{flex:1;display:grid;grid-template-columns:360px 1fr;grid-template-rows:minmax(0,1fr);
+       gap:18px;padding:18px;overflow:hidden}
+  .col{display:flex;flex-direction:column;gap:14px;min-height:0}
+  .col.left{overflow-y:auto;overflow-x:hidden;padding-right:4px}
+  .col.right{overflow:hidden}
+  .col.left::-webkit-scrollbar{width:8px}
+  .col.left::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+        box-shadow:var(--shadow);padding:16px}
+  .card h3{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+           font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .card h3 .hint{margin-left:auto;font-weight:400;letter-spacing:0;text-transform:none;
+           font-size:11px;color:var(--faint)}
+
+  label.fld{display:block;font-size:11px;letter-spacing:.06em;color:var(--muted);margin:0 0 5px}
+  .input{width:100%;background:#fff;border:1px solid var(--line);border-radius:10px;
+         padding:9px 11px;font-family:var(--mono);font-size:13px;transition:border-color .12s,box-shadow .12s}
+  .input:focus{outline:0;border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-soft)}
+  .input.big{font-size:22px;letter-spacing:.14em;font-weight:600;padding:10px 12px;text-align:center}
+
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;
+       border-radius:10px;padding:9px 14px;font-weight:600;font-size:13px;
+       transition:background .12s,border-color .12s,transform .04s;white-space:nowrap}
+  .btn:active{transform:translateY(1px)}
+  .btn.primary{background:var(--blue);color:#fff}
+  .btn.primary:hover{background:var(--blue-d)}
+  .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--text)}
+  .btn.ghost:hover{border-color:var(--blue);color:var(--blue)}
+  .btn.soft{background:var(--blue-soft);color:var(--blue)}
+  .btn.soft:hover{background:#e3e7fc}
+  .btn.wide{width:100%}
+  .btn:disabled{opacity:.5;cursor:default}
+  .btn.danger{color:var(--bad)}
+
+  .row{display:flex;gap:9px;align-items:center}
+  .row.wrap{flex-wrap:wrap}
+  .stack{display:flex;flex-direction:column;gap:11px}
+  .muted{color:var(--muted)}
+  .divider{height:1px;background:var(--line2);margin:14px -16px}
+
+  /* segmented control */
+  .seg{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
+  .seg button{flex:1;border-radius:8px;padding:8px 6px;font-size:13px;font-weight:600;color:var(--muted)}
+  .seg button.on{background:#fff;color:var(--blue);box-shadow:var(--shadow)}
+
+  /* connection status chip in card */
+  .chip{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;
+        color:var(--muted)}
+  .chip .dot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+  .chip.ok .dot{background:var(--ok)} .chip.ok{color:var(--ok)}
+  .chip.warn .dot{background:var(--warn)} .chip.warn{color:var(--warn)}
+  .chip.bad .dot{background:var(--bad)} .chip.bad{color:var(--bad)}
+
+  /* sheet columns */
+  .cols{display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center}
+  .cols label{font-size:12px;color:var(--muted)}
+  select.input{font-family:var(--sans);font-size:13px;padding:8px 10px;appearance:none;
+       background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23767b82' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+       background-repeat:no-repeat;background-position:right 11px center;padding-right:26px}
+  #signedRow .who{font-size:12px;color:var(--ok);font-family:var(--mono)}
+
+  /* ── right column: monitor ─────────────── */
+  .monitor{flex:none;text-align:center;padding:26px 20px 22px}
+  .monitor .state-chip{display:inline-flex;align-items:center;gap:8px;border-radius:999px;
+       padding:6px 14px;font-weight:700;font-size:13px;letter-spacing:.02em;margin-bottom:14px;
+       background:var(--bg);color:var(--muted)}
+  .monitor .state-chip.ok{background:var(--ok-soft);color:var(--ok)}
+  .monitor .state-chip.warn{background:var(--warn-soft);color:var(--warn)}
+  .monitor .state-chip.bad{background:var(--bad-soft);color:var(--bad)}
+  .monitor .num{font-family:var(--mono);font-size:56px;font-weight:700;letter-spacing:.06em;line-height:1}
+  .monitor .num.empty{color:var(--faint)}
+  .monitor .who{margin-top:8px;color:var(--muted);font-size:14px;min-height:20px}
+
+  .manual .row .input{flex:1}
+
+  .history{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .history .head{display:flex;align-items:center;margin-bottom:8px}
+  .history .head h3{margin:0}
+  .history .head .btn{margin-left:auto;padding:6px 11px;font-size:12px}
+  .history ul{list-style:none;overflow-y:auto;flex:1;margin:0 -6px;padding:0 6px}
+  .hrow{display:flex;align-items:center;gap:12px;padding:9px 8px;border-radius:9px;font-family:var(--mono);font-size:13px}
+  .hrow+.hrow{border-top:1px solid var(--line2)}
+  .hrow .t{color:var(--faint);font-size:12px;width:64px;flex:none}
+  .hrow .id{font-weight:600}
+  .hrow .st{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+  .hrow .st.ok{color:var(--ok)} .hrow .st.warn{color:var(--warn)} .hrow .st.bad{color:var(--bad)}
+  .empty-hint{color:var(--faint);font-size:13px;text-align:center;padding:24px}
+
+  /* banner */
+  #banner{display:none;background:var(--warn-soft);color:var(--warn);border:1px solid #f0dfae;
+       border-radius:10px;padding:9px 12px;font-size:12.5px;font-weight:600;text-align:center}
+  #banner.show{display:block}
+
+  /* QR modal */
+  .modal-back{position:fixed;inset:0;background:rgba(35,36,45,.42);display:none;
+       align-items:center;justify-content:center;z-index:50}
+  .modal-back.show{display:flex}
+  .modal{background:#fff;border-radius:18px;padding:26px 30px 24px;text-align:center;
+       box-shadow:0 20px 60px rgba(20,20,40,.28);max-width:380px}
+  .modal h2{font-size:17px;margin-bottom:4px}
+  .modal p{color:var(--muted);font-size:12.5px;margin-bottom:16px}
+  .modal .qr{width:250px;height:250px;border-radius:12px;background:#fff;display:block;margin:0 auto}
+  .modal .room{margin-top:16px;font-family:var(--mono);font-weight:700;color:var(--blue);font-size:15px;letter-spacing:.06em}
+  .modal .x{margin-top:18px}
+
+  /* default pairing screen — shown until a phone says hello */
+  .pair-view{position:fixed;inset:0;background:var(--bg);z-index:60;display:flex;
+       align-items:center;justify-content:center;padding:24px}
+  .pair-view.hidden{display:none}
+  .pair-card{background:#fff;border:1px solid var(--line);border-radius:22px;
+       box-shadow:0 24px 64px rgba(20,20,40,.10);padding:34px 44px 30px;text-align:center;max-width:430px}
+  .pair-brand{font-family:var(--mono);letter-spacing:.16em;color:var(--blue);font-size:15px;margin-bottom:18px}
+  .pair-brand b{font-weight:700}
+  .pair-card h2{font-size:21px;margin-bottom:6px}
+  .pair-card p{color:var(--muted);font-size:13px;margin-bottom:20px}
+  .pair-card .qr{width:286px;height:286px;border-radius:14px;display:block;margin:0 auto;background:#fff}
+  .pair-room{margin-top:16px;font-family:var(--mono);font-weight:700;color:var(--blue);font-size:16px;letter-spacing:.06em}
+  .pair-wait{margin-top:14px;color:var(--muted);font-size:13px;display:flex;align-items:center;justify-content:center;gap:9px}
+  .spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--blue);
+       border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .pair-skip{margin-top:18px;color:var(--faint);font-size:12px;text-decoration:underline}
+  .pair-skip:hover{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><b>ANUSA&nbsp;SCANNER</b><span> · RECEIVER</span></div>
+    <div class="spacer"></div>
+    <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
+    <button class="hbtn" id="newDayBtn">↻ New day</button>
+    <div class="ver" id="ver">v14.46</div>
+  </header>
+
+  <main>
+    <!-- LEFT: controls -->
+    <div class="col left">
+      <div class="card">
+        <h3>Connection</h3>
+        <label class="fld">ROOM CODE</label>
+        <div class="row">
+          <input class="input big" id="room" maxlength="8" value="9F2GM2" style="flex:1">
+          <button class="btn primary" id="connectBtn" style="min-width:116px">Connect</button>
+        </div>
+        <div class="divider"></div>
+        <button class="btn soft wide" id="pairBtn">📱  Pair a phone — show QR</button>
+        <label class="fld" style="margin-top:12px">BROKER</label>
+        <input class="input" id="broker" value="wss://broker.emqx.io:8084/mqtt">
+      </div>
+
+      <div class="card">
+        <h3>On scan</h3>
+        <div class="seg" id="modeSeg">
+          <button data-mode="keys" class="on">Type keystrokes</button>
+          <button data-mode="sheet">Google Sheet</button>
+        </div>
+
+        <div id="sheetPanel" style="display:none">
+          <div class="divider"></div>
+          <div class="row" id="signedRow" style="justify-content:space-between">
+            <button class="btn ghost" id="signinBtn">Sign in with Google</button>
+            <span class="who" id="signedWho"></span>
+          </div>
+          <label class="fld" style="margin-top:12px">SHEET URL</label>
+          <div class="row">
+            <input class="input" id="sheetUrl" placeholder="paste Google Sheet link" style="flex:1">
+            <button class="btn primary" id="loadBtn">Load</button>
+          </div>
+          <div class="cols" style="margin-top:12px">
+            <label>ID column</label><select class="input" id="colId"></select>
+            <label>Tick column</label><select class="input" id="colTick"></select>
+            <label>Name column</label><select class="input" id="colName"></select>
+          </div>
+          <div class="row" style="margin-top:12px;justify-content:space-between">
+            <span class="chip" id="sheetChip"><span class="dot"></span><span id="sheetStat">sign in, then load a sheet</span></span>
+            <button class="btn ghost" id="syncBtn" style="padding:6px 11px;font-size:12px">↻ Re-sync</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: monitor -->
+    <div class="col right">
+      <div id="banner">⚠ Keystroke mode — this window is focused, so scans show here but aren't typed</div>
+
+      <div class="card monitor">
+        <div class="state-chip" id="stateChip">waiting</div>
+        <div class="num empty" id="num">·······</div>
+        <div class="who" id="who"></div>
+      </div>
+
+      <div class="card manual">
+        <h3>Manual entry <span class="hint">when a card won't scan</span></h3>
+        <div class="row">
+          <input class="input" id="manualIn" placeholder="type a student number" inputmode="numeric">
+          <button class="btn primary" id="manualBtn">Enter</button>
+        </div>
+      </div>
+
+      <div class="card history">
+        <div class="head">
+          <h3>Recent scans</h3>
+          <button class="btn ghost" id="csvBtn">⤓ Download CSV</button>
+        </div>
+        <ul id="histList"><li class="empty-hint">Scans will appear here.</li></ul>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="pair-view" id="pairView">
+  <div class="pair-card">
+    <div class="pair-brand"><b>ANUSA&nbsp;SCANNER</b> · RECEIVER</div>
+    <h2>Pair your phone to begin</h2>
+    <p>Open the camera on your phone and point it at this code.</p>
+    <img class="qr" id="pairQr" alt="pairing QR">
+    <div class="pair-room" id="pairRoom">room ——</div>
+    <div class="pair-wait"><span class="spin"></span> waiting for a phone…</div>
+    <button class="pair-skip" id="pairSkip">Skip — set up manually</button>
+  </div>
+</div>
+
+<div class="modal-back" id="qrBack">
+  <div class="modal">
+    <h2>Scan with your phone camera</h2>
+    <p>Opens the scanner already paired — nothing to type.</p>
+    <img class="qr" id="qrImg" alt="pairing QR">
+    <div class="room" id="qrRoom">room 9F2GM2</div>
+    <button class="btn ghost x" id="qrClose">Close</button>
+  </div>
+</div>
+
+<script>
+/* ─────────────────────────────────────────────────────────────────────────
+   UI controller. Talks to Python through window.pywebview.api.* (each returns
+   a promise). Python pushes updates by calling window.uiEvent(type, payload).
+   A MOCK api is used when opened in a plain browser (design preview).
+   ───────────────────────────────────────────────────────────────────────── */
+const $ = s => document.querySelector(s);
+const api = () => (window.pywebview && window.pywebview.api) || MOCK;
+
+const ui = {
+  connected:false, mode:'keys', signedIn:false, sheetReady:false, headers:[], history:[],
+
+  setConn(on, room){
+    this.connected = on;
+    const p = $('#connPill');
+    p.className = 'conn ' + (on ? 'on' : 'off');
+    $('#connText').textContent = on ? ('connected · ' + room) : 'not connected';
+    $('#connectBtn').textContent = on ? 'Disconnect' : 'Connect';
+    $('#connectBtn').className = 'btn ' + (on ? 'ghost' : 'primary');
+  },
+  setMode(m){
+    this.mode = m;
+    document.querySelectorAll('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode===m));
+    $('#sheetPanel').style.display = m==='sheet' ? 'block' : 'none';
+    this.updateBanner();
+  },
+  updateBanner(){ $('#banner').classList.toggle('show', this.mode==='keys' && this._focused); },
+  setState(kind, word, id, name){
+    const chip = $('#stateChip');
+    chip.className = 'state-chip ' + (kind||'');
+    chip.textContent = word;
+    const n = $('#num');
+    n.textContent = id ? 'u'+id : '·······';
+    n.className = 'num' + (id ? '' : ' empty');
+    $('#who').textContent = name || '';
+  },
+  addHistory(id, label, cls, ts){
+    const ul = $('#histList');
+    if(this.history.length===0) ul.innerHTML='';
+    this.history.unshift({id,label,cls,ts});
+    const li = document.createElement('li');
+    li.className='hrow';
+    li.innerHTML = `<span class="t">${ts}</span><span class="id">u${id}</span>`
+                 + `<span class="st ${cls||''}">${label}</span>`;
+    ul.insertBefore(li, ul.firstChild);
+    while(ul.children.length>60) ul.removeChild(ul.lastChild);
+  },
+  fillCols(headers, guess){
+    this.headers = headers;
+    const fill = (sel, opts, val) => {
+      const s = $(sel); s.innerHTML='';
+      opts.forEach(o => { const e=document.createElement('option'); e.value=o; e.textContent=o; s.appendChild(e); });
+      if(val!=null) s.value = val;
+    };
+    fill('#colId', headers, guess[0]);
+    fill('#colTick', headers, guess[1]);
+    fill('#colName', ['(none)',...headers], guess[2]||'(none)');
+    this.applyCols();
+  },
+  applyCols(){
+    if(!this.headers.length) return;
+    api().set_columns($('#colId').value, $('#colTick').value, $('#colName').value);
+  },
+  setSheetStat(text, kind){ $('#sheetStat').textContent=text; $('#sheetChip').className='chip '+(kind||''); },
+  doReset(){   // "New day" — forget the session
+    this.history=[]; $('#histList').innerHTML='<li class="empty-hint">Scans will appear here.</li>';
+    this.setState('', 'waiting', '', '');
+    this.setMode('keys');
+    this.sheetReady=false; this.setSheetStat('sign in, then load a sheet','');
+    ['#colId','#colTick','#colName'].forEach(s=>$(s).innerHTML='');
+    $('#sheetUrl').value='';
+  },
+};
+
+/* Python → UI */
+window.uiEvent = (type, p={}) => {
+  if(type==='status'){ ui.setConn(p.kind==='ok', p.room||''); if(p.kind && p.kind!=='ok') $('#connText').textContent=p.text; }
+  else if(type==='focus'){ ui._focused=p.focused; ui.updateBanner(); }
+  else if(type==='working'){ ui.setState('', 'checking…', p.id, ''); }
+  else if(type==='result'){
+    const M={'checked-in':['ok','CHECKED IN'],'already':['warn','ALREADY IN'],
+             'not-registered':['bad','NOT REGISTERED'],'error':['bad','SHEET ERROR'],
+             'typed':['ok','TYPED'],'test':['warn','TEST — NOT TYPED']};
+    const [cls,word]=M[p.status]||['',p.status];
+    ui.setState(cls, word, p.id, p.name);
+    ui.addHistory(p.id, (M[p.status]?M[p.status][1].toLowerCase():p.status), cls, p.ts);
+  }
+  else if(type==='signed_in'){ ui.signedIn=p.ok; $('#signedWho').textContent=p.ok?'signed in ✓':''; $('#signinBtn').style.display=p.ok?'none':''; }
+  else if(type==='sheet_loaded'){ ui.fillCols(p.headers, p.guess); ui.setSheetStat(p.tab+' · '+p.rows+' rows', 'ok'); }
+  else if(type==='sheet_status'){ ui.setSheetStat(p.text, p.kind); ui.sheetReady = p.kind==='ok'; }
+  else if(type==='show_pairing'){ $('#pairQr').src=p.img; $('#pairRoom').textContent='room '+p.room; $('#pairView').classList.remove('hidden'); }
+  else if(type==='paired'){ $('#pairView').classList.add('hidden'); }
+  else if(type==='reset'){ ui.doReset(); }
+  else if(type==='version'){ $('#ver').textContent='v'+p.v; }
+};
+
+/* UI → Python */
+$('#connectBtn').onclick = () => ui.connected ? api().disconnect() : api().connect($('#room').value.trim().toUpperCase(), $('#broker').value.trim());
+$('#room').addEventListener('input', e => e.target.value = e.target.value.toUpperCase());
+$('#pairBtn').onclick = async () => {
+  const r = await api().pair_qr();
+  $('#qrImg').src = r.img; $('#qrRoom').textContent = 'room '+r.room; $('#room').value=r.room;
+  $('#qrBack').classList.add('show');
+};
+$('#qrClose').onclick = () => $('#qrBack').classList.remove('show');
+$('#qrBack').onclick = e => { if(e.target.id==='qrBack') $('#qrBack').classList.remove('show'); };
+document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => { ui.setMode(b.dataset.mode); api().set_mode(b.dataset.mode); });
+$('#signinBtn').onclick = () => { $('#signedWho').textContent='opening browser…'; api().sign_in(); };
+$('#loadBtn').onclick = () => { ui.setSheetStat('loading…','warn'); api().load_sheet($('#sheetUrl').value.trim()); };
+$('#syncBtn').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
+['#colId','#colTick','#colName'].forEach(s => $(s).onchange = () => ui.applyCols());
+$('#manualBtn').onclick = submitManual;
+$('#manualIn').addEventListener('keydown', e => { if(e.key==='Enter') submitManual(); });
+function submitManual(){ const v=($('#manualIn').value.match(/\d+/g)||[]).join(''); if(!v) return; $('#manualIn').value=''; api().manual(v); }
+$('#csvBtn').onclick = () => api().download_csv();
+$('#newDayBtn').onclick = () => { if(confirm('Start a new day?\n\nThis forgets the room, sheet and scans, and shows a fresh pairing code.')) api().new_day(); };
+$('#pairSkip').onclick = () => $('#pairView').classList.add('hidden');
+
+/* ── MOCK for browser-preview design (no pywebview) ── */
+const MOCK = {
+  connect:(r)=>window.uiEvent('status',{kind:'ok',room:r}),
+  disconnect:()=>window.uiEvent('status',{kind:'off'}),
+  set_mode:()=>{}, set_columns:()=>{}, sync:()=>setTimeout(()=>ui.setSheetStat('re-synced · 137 rows','ok'),400),
+  sign_in:()=>setTimeout(()=>window.uiEvent('signed_in',{ok:true}),500),
+  load_sheet:()=>setTimeout(()=>window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,
+      headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:['UID:','Attendence','Full Name:']}),500),
+  manual:(v)=>{window.uiEvent('working',{id:v});setTimeout(()=>window.uiEvent('result',{status:'checked-in',id:v,name:'Manual Entry',ts:clock()}),400);},
+  download_csv:()=>{}, pair_qr:async()=>({room:'9F2GM2',img:mockQR()}), set_focus:()=>{}, get_state:()=>{},
+  new_day:()=>{ ui.doReset(); window.uiEvent('show_pairing',{room:'NEWDAY',img:mockQR()}); },
+};
+function clock(){ return new Date().toTimeString().slice(0,8); }
+function mockQR(){ // simple placeholder grid so the modal previews
+  const c=document.createElement('canvas');c.width=c.height=250;const x=c.getContext('2d');
+  x.fillStyle='#fff';x.fillRect(0,0,250,250);x.fillStyle='#3b4fd6';
+  for(let i=0;i<25;i++)for(let j=0;j<25;j++)if((i*j+i+j)%3===0)x.fillRect(10+i*9,10+j*9,8,8);
+  return c.toDataURL();
+}
+
+/* window focus drives the keystroke-mode test banner */
+window.addEventListener('focus', () => { ui._focused=true; ui.updateBanner(); if(window.pywebview) api().set_focus(true); });
+window.addEventListener('blur',  () => { ui._focused=false; ui.updateBanner(); if(window.pywebview) api().set_focus(false); });
+
+/* boot: in real app, ask Python for state; in preview, seed a demo */
+window.addEventListener('pywebviewready', () => api().get_state());
+if(!window.pywebview){ // preview seed
+  ui.setMode('sheet'); ui.setConn(true,'9F2GM2'); ui._focused=true;
+  window.uiEvent('signed_in',{ok:true});
+  window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:['UID:','Attendence','Full Name:']});
+  window.uiEvent('result',{status:'checked-in',id:'8221537',name:'Malakai King',ts:'23:31:41'});
+  ui.addHistory('7752506','already','warn','23:30:02');
+  ui.addHistory('8047692','checked in','ok','23:27:00');
+  window.uiEvent('show_pairing',{room:'9F2GM2',img:mockQR()});   // default: pairing screen
+}
+</script>
+</body>
+</html>
