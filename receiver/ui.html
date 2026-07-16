@@ -102,7 +102,8 @@
   select.input{font-family:var(--sans);font-size:13px;padding:8px 10px;appearance:none;
        background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23767b82' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
        background-repeat:no-repeat;background-position:right 11px center;padding-right:26px}
-  #signedRow .who{font-size:12px;color:var(--ok);font-family:var(--mono)}
+  #signedRow .who{display:none;align-items:center;gap:7px;font-size:12.5px;font-weight:600;
+       color:var(--ok);background:var(--ok-soft);border-radius:999px;padding:7px 14px}
 
   /* ── right column: monitor ─────────────── */
   .monitor{flex:none;text-align:center;padding:26px 20px 22px}
@@ -177,7 +178,7 @@
     <div class="spacer"></div>
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.47</div>
+    <div class="ver" id="ver">v14.48</div>
   </header>
 
   <main>
@@ -380,7 +381,13 @@ window.uiEvent = (type, p={}) => {
     ui.setState(cls, word, p.id, p.name);
     ui.addHistory(p.id, (M[p.status]?M[p.status][1].toLowerCase():p.status), cls, p.ts);
   }
-  else if(type==='signed_in'){ ui.signedIn=p.ok; $('#signedWho').textContent=p.ok?'signed in ✓':''; $('#signinBtn').style.display=p.ok?'none':''; }
+  else if(type==='signed_in'){
+    ui.signedIn=p.ok;
+    $('#signinBtn').style.display = p.ok ? 'none' : '';
+    const who=$('#signedWho');
+    who.textContent = p.ok ? '✓  Google account — OAuth valid' : '';
+    who.style.display = p.ok ? 'inline-flex' : 'none';
+  }
   else if(type==='sheet_loaded'){ ui.fillCols(p.headers, p.guess); ui.setSheetStat(p.tab+' · '+p.rows+' rows', 'ok'); }
   else if(type==='sheet_status'){ ui.setSheetStat(p.text, p.kind); ui.sheetReady = p.kind==='ok'; }
   else if(type==='show_pairing'){ $('#pairQr').src=p.img; $('#pairRoom').textContent='room '+p.room; $('#pairView').classList.remove('hidden'); }
