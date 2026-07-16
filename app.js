@@ -758,18 +758,28 @@ async function scanTick() {
       return;
     }
 
-    // Fresh probe of a search rotation. ONE valid read is enough to trust and lock —
-    // the 7-digit + start-digit whitelist is a high bar, so the confirming second read was
-    // dropped for speed (~0.3–0.6s/scan). Identity is confirmed by the name shown to the
-    // operator. (Restrict orientations in Settings to cut the odds of wrong-rotation junk.)
-    if (id) {
-      _rtLocked = r; _lockLastId = id; _rtFailCount = 0;
-      localStorage.setItem('wedge.rot', String(r));   // remember the confirmed rotation
-      handleAccept(id);
-      _lockSentId = id;
-    } else {
-      _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length;
+    if (_candR !== null) {
+      // This tick re-checked a pending candidate rotation.
+      if (id && id === _candId) {
+        // Same 7-digit value twice in a row at the same rotation → trust and lock.
+        _rtLocked = r; _lockLastId = id; _rtFailCount = 0;
+        localStorage.setItem('wedge.rot', String(r)); // remember the CONFIRMED rotation
+        _candR = null; _candId = null;
+        handleAccept(id);
+        _lockSentId = id;   // this lock session has now sent this id
+      } else {
+        // Candidate didn't reproduce — it was noise from a wrong orientation. Move on.
+        _candR = null; _candId = null;
+        _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length;
+      }
+      return;
     }
+
+    // Fresh probe of a search rotation. Require a confirming second read: a single valid
+    // 7-digit read is held as a candidate, and only sent if the very next read at the same
+    // rotation reproduces it — so a lone misread is never accepted.
+    if (id) { _candR = r; _candId = id; }   // hold it; next tick confirms or discards
+    else    { _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length; }
   } catch(e) { /* transient error: skip frame */ }
   finally { state.busy = false; }
 }
