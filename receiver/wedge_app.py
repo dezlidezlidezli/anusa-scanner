@@ -51,7 +51,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.65"   # shared version across the Mac app + web app
+VERSION        = "14.66"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -301,11 +301,21 @@ class Api:
         self.bridge.ack(data.get("seq"), data.get("dev"))
 
     def _do_checkin(self, data, sid, ts):
+        # Optimistic: decide the outcome from the loaded sheet (fast) and show it NOW, then
+        # write the tick to Google Sheets in the background — the slow API write no longer
+        # sits between the scan and the result. Only a write FAILURE corrects the UI.
         try:
-            res = self.sheet.check_in(sid)
+            plan = self.sheet.plan_checkin(sid)
         except Exception as e:
-            res = {"status": "error", "name": str(e)}
-        self.q.put(("checkin", data, sid, ts, res))
+            self.q.put(("checkin", data, sid, ts, {"status": "error", "name": str(e)}))
+            return
+        self.q.put(("checkin", data, sid, ts, plan))
+        if plan.get("status") == "checked-in":
+            try:
+                self.sheet.commit_checkin(plan)
+            except Exception:
+                self.q.put(("checkin", data, sid, ts,
+                            {"status": "error", "name": "sheet write failed — rescan", "id": sid}))
 
     def _checkin_result(self, data, sid, ts, res):
         status = res.get("status", "error")

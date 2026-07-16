@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -186,6 +187,7 @@ class SheetSession:
         self.headers = []
         self.values = []
         self.id_i = self.tick_i = self.name_i = None
+        self._last_reload = 0.0
 
     def open(self, url, tab=None):
         """Load a spreadsheet tab. Returns {title, tab, tabs, headers, rows}."""
@@ -233,10 +235,12 @@ class SheetSession:
         self.tick_i = resolve_col(self.headers, tick_col)
         self.name_i = resolve_col(self.headers, name_col) if name_col else None
 
-    def check_in(self, student):
-        """Flip this student's tick FALSE→TRUE. A student is ONE person even if they
-        appear in several rows (one registration per student), so every matching row is
-        ticked together. Returns a status dict. Raises on API error."""
+    def plan_checkin(self, student):
+        """Decide the check-in outcome from the loaded sheet WITHOUT the (slow) API write, so
+        the caller can show the result immediately. A student is ONE person even if they
+        appear in several rows, so all matching rows are ticked together. For 'checked-in' the
+        rows are optimistically marked TRUE in the local cache and returned under '_to_tick'
+        for commit_checkin() to write. Returns a status dict; raises only on a bad setup."""
         with self._lock:
             if self.id_i is None or self.tick_i is None:
                 raise RuntimeError("columns not set")
@@ -245,7 +249,7 @@ class SheetSession:
                 return {"status": "not-registered", "name": "", "row": None, "rows": []}
             rows = self._find_all(target)
             if not rows:
-                self._reload_locked()          # maybe rows were added since load
+                self._reload_if_stale()        # maybe registered since load (debounced)
                 rows = self._find_all(target)
             if not rows:
                 # No exact match. If exactly one roster UID is a single digit off, it's
@@ -272,14 +276,37 @@ class SheetSession:
                 return {"status": "already", "name": name,
                         "row": sheet_rows[0], "rows": sheet_rows}
 
-            for r in to_tick:
-                rng = f"'{self.tab}'!{col_letter(self.tick_i)}{r + 1}"
-                self.svc.spreadsheets().values().update(
-                    spreadsheetId=self.sid, range=rng, valueInputOption="USER_ENTERED",
-                    body={"values": [["TRUE"]]}).execute()
-                self._set_cell(r, self.tick_i, "TRUE")   # keep local cache in sync
-            return {"status": "checked-in", "name": name,
-                    "row": (to_tick[0] + 1), "rows": sheet_rows}
+            for r in to_tick:                  # optimistic local tick; commit writes it remotely
+                self._set_cell(r, self.tick_i, "TRUE")
+            return {"status": "checked-in", "name": name, "row": (to_tick[0] + 1),
+                    "rows": sheet_rows, "_to_tick": to_tick}
+
+    def commit_checkin(self, plan):
+        """Write the ticks planned by plan_checkin() in ONE batched API call. On failure the
+        optimistic local update is reverted and the error re-raised so the caller can correct
+        the UI."""
+        to_tick = plan.get("_to_tick") or []
+        if not to_tick:
+            return
+        col = col_letter(self.tick_i)
+        with self._lock:
+            try:
+                self.svc.spreadsheets().values().batchUpdate(
+                    spreadsheetId=self.sid,
+                    body={"valueInputOption": "USER_ENTERED",
+                          "data": [{"range": f"'{self.tab}'!{col}{r + 1}", "values": [["TRUE"]]}
+                                   for r in to_tick]}).execute()
+            except Exception:
+                for r in to_tick:              # revert so a retry works + attendance stays honest
+                    self._set_cell(r, self.tick_i, "FALSE")
+                raise
+
+    def check_in(self, student):
+        """Plan + commit synchronously (write confirmed before returning)."""
+        plan = self.plan_checkin(student)
+        if plan.get("status") == "checked-in":
+            self.commit_checkin(plan)
+        return plan
 
     def roster(self):
         """[{id, name}] for every row that has a UID — powers manual-entry autofill."""
@@ -337,6 +364,13 @@ class SheetSession:
         self.values = self.svc.spreadsheets().values().get(
             spreadsheetId=self.sid, range=f"'{self.tab}'").execute().get("values", [])
         self.headers = self.values[0] if self.values else []
+        self._last_reload = time.monotonic()
+
+    def _reload_if_stale(self, max_age=5.0):
+        """Reload on a not-found ONLY if the cache is older than max_age — so a burst of
+        unregistered/typo'd scans doesn't fire a full sheet GET every time."""
+        if time.monotonic() - self._last_reload >= max_age:
+            self._reload_locked()
 
     def _find_all(self, target):
         return [r for r in range(1, len(self.values))
