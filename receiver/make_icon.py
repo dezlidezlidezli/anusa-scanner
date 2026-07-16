@@ -57,10 +57,12 @@ def font(size, kind="mono"):
     return ImageFont.load_default()
 
 
-def build_master():
+def build_master(full_bleed=False):
+    # full_bleed=True fills the whole canvas (for PWA home-screen / maskable icons);
+    # otherwise it's a rounded macOS squircle with a transparent margin.
     img = Image.new("RGBA", (N, N), (0, 0, 0, 0))
 
-    # ── squircle body with a vertical gradient ────────────────────────────────
+    # ── body with a vertical gradient ─────────────────────────────────────────
     margin, radius = 44, 210
     grad = Image.new("RGBA", (N, N), (0, 0, 0, 0))
     gpix = grad.load()
@@ -72,11 +74,14 @@ def build_master():
         for x in range(N):
             gpix[x, y] = gpix_row
 
-    mask = Image.new("L", (N, N), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        [u(margin), u(margin), u(BASE - margin), u(BASE - margin)],
-        radius=u(radius), fill=255)
-    img.paste(grad, (0, 0), mask)
+    if full_bleed:
+        img.paste(grad, (0, 0))
+    else:
+        mask = Image.new("L", (N, N), 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            [u(margin), u(margin), u(BASE - margin), u(BASE - margin)],
+            radius=u(radius), fill=255)
+        img.paste(grad, (0, 0), mask)
 
     # reticle frame (design units) — landscape, wide enough for 8 glyphs
     fx0, fx1, fy0, fy1 = 150, 874, 356, 668
@@ -132,15 +137,28 @@ def build_master():
     rounded(d, [fx0 - 6, beam_y - 4, fx1 + 6, beam_y + 4], 4,
             fill=ORANGE_L + (255,))
 
-    # ── rim light on the squircle edge ───────────────────────────────────────
-    ring = Image.new("RGBA", (N, N), (0, 0, 0, 0))
-    ImageDraw.Draw(ring).rounded_rectangle(
-        [u(margin) + u(1), u(margin) + u(1),
-         u(BASE - margin) - u(1), u(BASE - margin) - u(1)],
-        radius=u(radius), outline=RIM + (40,), width=u(2))
-    img = Image.alpha_composite(img, ring)
+    # ── rim light on the squircle edge (macOS icon only) ─────────────────────
+    if not full_bleed:
+        ring = Image.new("RGBA", (N, N), (0, 0, 0, 0))
+        ImageDraw.Draw(ring).rounded_rectangle(
+            [u(margin) + u(1), u(margin) + u(1),
+             u(BASE - margin) - u(1), u(BASE - margin) - u(1)],
+            radius=u(radius), outline=RIM + (40,), width=u(2))
+        img = Image.alpha_composite(img, ring)
 
     return img.resize((BASE, BASE), Image.LANCZOS)
+
+
+def build_pwa_icons():
+    """Write the phone PWA home-screen icons (full-bleed, matching the Mac icon)."""
+    pwa_dir = os.path.join(HERE, "..", "icons")
+    if not os.path.isdir(pwa_dir):
+        return
+    bleed = build_master(full_bleed=True)
+    for px, name in [(192, "icon-192.png"), (512, "icon-512.png"),
+                     (180, "apple-touch-icon.png")]:
+        bleed.resize((px, px), Image.LANCZOS).save(os.path.join(pwa_dir, name))
+    print("wrote PWA icons →", os.path.normpath(pwa_dir))
 
 
 def main():
@@ -159,6 +177,8 @@ def main():
     icns = os.path.join(HERE, "appicon.icns")
     subprocess.run(["iconutil", "-c", "icns", iconset, "-o", icns], check=True)
     print("wrote", icns)
+
+    build_pwa_icons()
 
 
 if __name__ == "__main__":

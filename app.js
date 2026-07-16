@@ -854,6 +854,24 @@ function finishPair(room) {
   if (r) r(room);
 }
 
+// Hard recovery when the PWA is stuck/glitched: drop the service worker + all caches
+// (so nothing stale is served) and reload fresh from the network. Keeps saved settings
+// (room, etc.) since those live in localStorage, which is left untouched.
+async function forceReload() {
+  if (!confirm('Force reload the app?\n\nClears the cache to recover from a glitch. Your room stays paired.')) return;
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+    if (window.caches) {
+      const ks = await caches.keys();
+      await Promise.all(ks.map(k => caches.delete(k)));
+    }
+  } catch (e) { /* best effort */ }
+  location.reload();
+}
+
 async function onStart() {
   const err = $('#gateErr');
   err.style.display = 'none';
@@ -925,6 +943,7 @@ function onSave() {
 function wireUI() {
   $('#goBtn').addEventListener('click', onStart);
   $('#pauseBtn').addEventListener('click', onPause);
+  $('#reloadBtn').addEventListener('click', forceReload);
   $('#pairManual').addEventListener('click', () => {
     const v = prompt('Enter the room code shown on the receiver:');
     if (v == null) return;

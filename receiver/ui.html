@@ -178,7 +178,7 @@
     <div class="spacer"></div>
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.50</div>
+    <div class="ver" id="ver">v14.51</div>
   </header>
 
   <main>
@@ -207,7 +207,10 @@
           <div class="divider"></div>
           <div class="row" style="justify-content:space-between">
             <span class="chip" id="pantryChip"><span class="dot"></span><span id="pantryStat">not set up</span></span>
-            <button class="btn ghost" id="pantryEdit" style="padding:6px 12px;font-size:12px">Edit setup</button>
+            <div class="row" style="gap:6px">
+              <button class="btn ghost" id="pantryReload" title="Re-sync the sheet now" style="padding:6px 11px;font-size:14px;line-height:1">↻</button>
+              <button class="btn ghost" id="pantryEdit" style="padding:6px 12px;font-size:12px">Edit setup</button>
+            </div>
           </div>
         </div>
       </div>
@@ -413,6 +416,7 @@ document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => {
 function openPantry(){ $('#pantryBack').classList.add('show'); }
 function closePantry(){ $('#pantryBack').classList.remove('show'); }
 $('#pantryEdit').onclick = openPantry;
+$('#pantryReload').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
 $('#pantryDone').onclick = closePantry;
 $('#pantryBack').onclick = e => { if(e.target.id==='pantryBack') closePantry(); };
 $('#signinBtn').onclick = () => { $('#signedWho').textContent='opening browser…'; api().sign_in(); };
