@@ -87,7 +87,7 @@
   .reticle i:nth-child(2){right:-2px;top:-2px;border-left:0;border-bottom:0;border-radius:0 10px 0 0}
   .reticle i:nth-child(3){left:-2px;bottom:-2px;border-right:0;border-top:0;border-radius:0 0 0 10px}
   .reticle i:nth-child(4){right:-2px;bottom:-2px;border-left:0;border-top:0;border-radius:0 0 10px 0}
-  .reticle.hit i{border-color:var(--tick)}
+  .reticle.hit i{border-color:#82848c}  /* neutral grey on capture — matches #scanFlash; green means a confirmed check-in, not a scan */
   @media (prefers-reduced-motion:no-preference){
     .reticle.hit{animation:pulse .45s ease}
     @keyframes pulse{0%{transform:translate(-50%,-50%) scale(1)}35%{transform:translate(-50%,-50%) scale(1.04)}100%{transform:translate(-50%,-50%) scale(1)}}
@@ -341,7 +341,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.61</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.62</p>
 </div>
 
 <div class="toast" id="toast"></div>
