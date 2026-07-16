@@ -3,7 +3,7 @@
    CDN library (mqtt, ONNX Runtime) and the local OCR models under ./models (~10MB);
    after the first online load the app starts instantly and works offline. */
 
-const VERSION = 'anusa-scanner-v14-62';
+const VERSION = 'anusa-scanner-v14-63';
 const CORE = [
   './',
   './index.html',

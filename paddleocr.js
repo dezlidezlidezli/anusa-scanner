@@ -27,8 +27,9 @@ const PaddleOCR = (() => {
     // real class count at decode time.
     charset = ['<blank>'].concat(dict);
     const so = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' };
-    det = await ort.InferenceSession.create(opts.detUrl, so);
-    rec = await ort.InferenceSession.create(opts.recUrl, so);
+    // det/rec may be a URL string OR pre-fetched bytes (Uint8Array) — ORT accepts both.
+    det = await ort.InferenceSession.create(opts.det || opts.detUrl, so);
+    rec = await ort.InferenceSession.create(opts.rec || opts.recUrl, so);
     ready = true;
     return { detIn: det.inputNames, detOut: det.outputNames,
              recIn: rec.inputNames, recOut: rec.outputNames, classes: charset.length };

@@ -440,17 +440,62 @@ function loadScript(src) {
     document.head.appendChild(s);
   });
 }
+
+// Fetch with a byte-progress callback + a stall guard (abort if no data for stallMs), so a
+// dropped connection surfaces an error instead of hanging on "loading" forever.
+async function fetchProgress(url, onByte, stallMs = 45000) {
+  const ctrl = new AbortController();
+  let stall = setTimeout(() => ctrl.abort(), stallMs);
+  let res;
+  try { res = await fetch(url, { signal: ctrl.signal }); }
+  catch (e) { clearTimeout(stall); throw new Error('download stalled — check your connection'); }
+  if (!res.ok) { clearTimeout(stall); throw new Error(`download failed (${res.status})`); }
+  const total = +(res.headers.get('content-length') || 0);
+  if (!res.body) { clearTimeout(stall); return new Uint8Array(await res.arrayBuffer()); }
+  const reader = res.body.getReader();
+  const chunks = []; let received = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value); received += value.length;
+      clearTimeout(stall); stall = setTimeout(() => ctrl.abort(), stallMs);
+      onByte(received, total);
+    }
+  } catch (e) { throw new Error('download stalled — check your connection'); }
+  finally { clearTimeout(stall); }
+  const out = new Uint8Array(received); let o = 0;
+  for (const c of chunks) { out.set(c, o); o += c.length; }
+  return out;
+}
+
 let _paddleLoading = null;
 async function loadPaddle() {
   if (state.paddleReady) return;
   if (_paddleLoading) return _paddleLoading;
   _paddleLoading = (async () => {
-    setReadout('', 'loading OCR engine…', '');
-    await loadScript(ORT_SRC + 'ort.min.js');
-    window.ort.env.wasm.numThreads = 1;             // iOS Safari: single-thread WASM is safest
+    // First run pulls the models (~10MB) + the ONNX runtime WASM (~11MB); everything is
+    // cached by the service worker afterwards, so this only happens once. Show real progress
+    // so it's obviously downloading, not frozen.
+    const urls = ['./models/det.onnx', './models/rec.onnx'];
+    const sizes = [2429873, 7830888], total = sizes[0] + sizes[1];
+    const bytes = [];
+    let base = 0;
+    for (let i = 0; i < urls.length; i++) {
+      bytes[i] = await fetchProgress(urls[i], (rcv) => {
+        const pct = Math.min(99, Math.round((base + rcv) / total * 100));
+        setReadout('', `downloading OCR model… ${pct}%`, 'warn');
+      });
+      base += sizes[i];
+    }
+    // Load the WASM-ONLY ORT build (small loader, no WebGPU — WebGPU init is flaky/slow on
+    // iOS Safari and was the likely hang). It fetches an ~11MB WASM once, then SW-cached.
+    setReadout('', 'starting OCR engine (~11 MB)…', 'warn');
+    await loadScript(ORT_SRC + 'ort.wasm.min.js');
+    window.ort.env.wasm.numThreads = 1;             // no cross-origin isolation → single-thread
     window.ort.env.wasm.wasmPaths = ORT_SRC;
-    await PaddleOCR.init({ ort: window.ort, detUrl: './models/det.onnx',
-                           recUrl: './models/rec.onnx', dictUrl: './models/en_dict.txt' });
+    await PaddleOCR.init({ ort: window.ort, det: bytes[0], rec: bytes[1],
+                           dictUrl: './models/en_dict.txt' });
     state.paddleReady = true;
     setReadout('', 'ready — frame the number', '');
   })();
@@ -825,6 +870,7 @@ async function onStart() {
     startScanning();
   } catch (e) {
     stopCamera();
+    $('#gate').style.display = 'flex';   // re-show the gate so the error (e.g. OCR download) is visible
     err.textContent = (e && e.name === 'NotAllowedError')
       ? 'Camera access was denied. Allow camera for this app in iOS Settings → Apps, then try again.'
       : 'Could not start: ' + (e.message || e);
