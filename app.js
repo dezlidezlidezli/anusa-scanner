@@ -442,6 +442,22 @@ async function initOCR() {
   setReadout('', 'ready — frame the number', '');
 }
 
+// If a recognise() ever hangs (iOS can kill the Tesseract worker under memory pressure),
+// the scan loop would otherwise sit with state.busy stuck true and stop OCR-ing entirely
+// (symptom: only 1 frame is captured, reads never confirm). Rebuild the worker so the
+// loop recovers on its own.
+const OCR_TIMEOUT_MS = 7000;
+let _reiniting = false;
+async function reinitOCR() {
+  if (_reiniting) return;
+  _reiniting = true;
+  const dead = state.worker;
+  state.worker = null; state.workerReady = false;
+  try { if (dead) await dead.terminate(); } catch (e) {}
+  try { await initOCR(); } catch (e) {}
+  _reiniting = false;
+}
+
 /* map the on-screen reticle to source-video pixels (object-fit: cover) */
 // Grab the full video frame with rotIdx additional 90°CCW steps beyond the base
 // portrait correction. rotIdx 0 = most common (card landscape on table, phone portrait).
@@ -617,7 +633,19 @@ function drawDbgCanvas(frame, modeLabel) {
 }
 
 async function ocrFrame(frame, modeLabel) {
-  const { data } = await state.worker.recognize(frame);
+  let data, to;
+  try {
+    const res = await Promise.race([
+      state.worker.recognize(frame),
+      new Promise((_, rej) => { to = setTimeout(() => rej(new Error('ocr-timeout')), OCR_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(to);
+    data = res.data;
+  } catch (e) {
+    clearTimeout(to);
+    reinitOCR();   // worker hung/died — rebuild it so the loop keeps going
+    return null;
+  }
   const id = extractId(data.text || '', state.settings.digits, state.settings.prefix, state.settings.startDigits);
   captureFrame(modeLabel, frame, data.text || '', id);
   dbgRecord(modeLabel, data.text || '', id);
@@ -780,6 +808,9 @@ function scanLoop() {
   });
 }
 function startScanning() {
+  // Belt-and-suspenders: ensure the QR pairing loop isn't still running against the camera.
+  if (state._pairTimer) { clearTimeout(state._pairTimer); state._pairTimer = null; }
+  state._pairResolve = null;
   state.scanning = true;
   resetRtState();  // re-detect card orientation + clear pending candidate each session
   $('#pauseBtn').style.display = 'block';
@@ -833,7 +864,7 @@ function scanPairingQR() {
       if (!state._pairResolve) return;
       const vw = video.videoWidth, vh = video.videoHeight;
       if (vw && vh && typeof jsQR === 'function') {
-        const w = Math.min(600, vw), h = Math.round(vh * w / vw);
+        const w = Math.min(480, vw), h = Math.round(vh * w / vw);
         cv.width = w; cv.height = h;
         ctx.drawImage(video, 0, 0, w, h);
         try {
@@ -843,13 +874,14 @@ function scanPairingQR() {
           if (room) { finishPair(room); return; }
         } catch (e) { /* transient */ }
       }
-      requestAnimationFrame(tick);
+      state._pairTimer = setTimeout(tick, 120);   // ~8 fps — gentle on memory vs 60fps rAF
     })();
   });
 }
 function finishPair(room) {
   const r = state._pairResolve;
   state._pairResolve = null;
+  if (state._pairTimer) { clearTimeout(state._pairTimer); state._pairTimer = null; }
   $('#pairManual').style.display = 'none';
   if (r) r(room);
 }
