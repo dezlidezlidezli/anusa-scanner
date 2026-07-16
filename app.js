@@ -133,6 +133,7 @@ async function connectBridge() {
           'already':        ['already in',     'warn'],
           'not-registered': ['not registered', 'bad'],
           'error':          ['sheet error',    'bad'],
+          'fuzzy':          ['confirm on receiver', 'warn'],
         };
         const [txt, cls] = map[msg.status] || [msg.status, ''];
         const label = txt + (msg.name ? '  ·  ' + msg.name : '');
@@ -291,7 +292,7 @@ function chimeFail() { tone([[247, 0], [165, 0.14]], 'sawtooth', 0.17, 0.26);   
 // Sound for a check-in result (sheet mode only — driven by the receiver's status).
 function resultSound(status) {
   if (status === 'checked-in') chimeOk();
-  else if (status === 'already') chimeWarn();
+  else if (status === 'already' || status === 'fuzzy') chimeWarn();
   else chimeFail();                       // not-registered / error
 }
 
@@ -395,6 +396,7 @@ function showResult(status, id, name) {
     'already':        ['warn', '↺', 'ALREADY IN'],
     'not-registered': ['bad',  '✕', 'NOT REGISTERED'],
     'error':          ['bad',  '⚠', 'SHEET ERROR'],
+    'fuzzy':          ['warn', '?', 'CONFIRM ON MAC'],
   };
   const [cls, glyph, word] = map[status] || ['', '', status];
   const el = $('#result');
@@ -754,26 +756,18 @@ async function scanTick() {
       return;
     }
 
-    if (_candR !== null) {
-      // This tick re-checked a pending candidate rotation.
-      if (id && id === _candId) {
-        // Same 7-digit value twice in a row at the same rotation → trust and lock.
-        _rtLocked = r; _lockLastId = id; _rtFailCount = 0;
-        localStorage.setItem('wedge.rot', String(r)); // remember the CONFIRMED rotation
-        _candR = null; _candId = null;
-        handleAccept(id);
-        _lockSentId = id;   // this lock session has now sent this id
-      } else {
-        // Candidate didn't reproduce — it was noise from a wrong orientation. Move on.
-        _candR = null; _candId = null;
-        _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length;
-      }
-      return;
+    // Fresh probe of a search rotation. ONE valid read is enough to trust and lock —
+    // the 7-digit + start-digit whitelist is a high bar, so the confirming second read was
+    // dropped for speed (~0.3–0.6s/scan). Identity is confirmed by the name shown to the
+    // operator. (Restrict orientations in Settings to cut the odds of wrong-rotation junk.)
+    if (id) {
+      _rtLocked = r; _lockLastId = id; _rtFailCount = 0;
+      localStorage.setItem('wedge.rot', String(r));   // remember the confirmed rotation
+      handleAccept(id);
+      _lockSentId = id;
+    } else {
+      _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length;
     }
-
-    // Fresh probe of a search rotation.
-    if (id) { _candR = r; _candId = id; }   // hold it; next tick confirms or discards
-    else    { _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length; }
   } catch(e) { /* transient error: skip frame */ }
   finally { state.busy = false; }
 }
@@ -953,10 +947,19 @@ async function onStart() {
 
 function onPause() {
   stopScanning();
-  stopCamera();
-  setReadout('', '', '');
-  $('#gate').style.display = 'flex';
+  // turn the torch off before releasing the camera (saves battery)
+  const tb = $('#torchBtn');
+  if (tb && tb.classList.contains('on') && state.track) {
+    try { state.track.applyConstraints({ advanced: [{ torch: false }] }); } catch (e) {}
+    tb.classList.remove('on');
+  }
+  stopCamera();            // stops the camera track (light off) + releases the wake lock
+  setReadout('', 'paused — camera off', 'warn');
+  // A distinct paused gate so it's clearly a pause (session/room kept), not an end.
+  const desc = $('#gateDesc');
+  if (desc) desc.textContent = 'Paused — camera off to save battery. The room stays paired; tap Resume to keep scanning.';
   $('#goBtn').textContent = 'Resume scanning';
+  $('#gate').style.display = 'flex';
 }
 
 function openSheet() {

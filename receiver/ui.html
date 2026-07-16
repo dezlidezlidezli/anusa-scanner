@@ -116,8 +116,31 @@
   .monitor .num{font-family:var(--mono);font-size:56px;font-weight:700;letter-spacing:.06em;line-height:1}
   .monitor .num.empty{color:var(--faint)}
   .monitor .who{margin-top:8px;color:var(--muted);font-size:14px;min-height:20px}
+  .monitor .attend{margin-top:16px;padding-top:14px;border-top:1px solid var(--line2);
+       font-family:var(--mono);font-size:13px;color:var(--muted)}
+  .monitor .attend b{color:var(--ok);font-weight:700}
 
   .manual .row .input{flex:1}
+  .manual-wrap{position:relative}
+  .suggest{position:absolute;left:0;right:0;top:calc(100% + 5px);z-index:20;
+       background:#fff;border:1px solid var(--line);border-radius:11px;box-shadow:var(--shadow);
+       overflow:hidden;display:none}
+  .suggest.show{display:block}
+  .suggest .s-row{display:flex;align-items:center;gap:12px;padding:9px 13px;cursor:pointer}
+  .suggest .s-row+.s-row{border-top:1px solid var(--line2)}
+  .suggest .s-row.sel,.suggest .s-row:hover{background:var(--blue-soft)}
+  .suggest .s-id{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--blue)}
+  .suggest .s-name{color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .suggest .s-hint{margin-left:auto;font-size:11px;color:var(--faint);flex:none}
+
+  /* fuzzy near-miss confirm */
+  #fuzzyBar{background:var(--warn-soft);border:1px solid #f0dfae;border-radius:12px;
+       padding:14px 16px;box-shadow:var(--shadow)}
+  #fuzzyBar .fz-q{color:var(--warn);font-size:14px;font-weight:600;margin-bottom:11px}
+  #fuzzyBar .fz-id{font-family:var(--mono);font-weight:700}
+  #fuzzyBar .fz-hint{color:#a97f2e;font-weight:500}
+  #fuzzyBar .fz-btns{display:flex;gap:8px}
+  #fuzzyBar .fz-btns .btn{padding:8px 14px;font-size:13px}
 
   .history{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden}
   .history .head{display:flex;align-items:center;margin-bottom:8px}
@@ -178,7 +201,7 @@
     <div class="spacer"></div>
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.53</div>
+    <div class="ver" id="ver">v14.54</div>
   </header>
 
   <main>
@@ -220,17 +243,29 @@
     <div class="col right">
       <div id="banner">⚠ Keystroke mode — this window is focused, so scans show here but aren't typed</div>
 
+      <div id="fuzzyBar" style="display:none">
+        <div class="fz-q">No exact match — did you mean <b id="fzName"></b> <span id="fzId" class="fz-id"></span>? <span class="fz-hint">(check the student, then confirm)</span></div>
+        <div class="fz-btns">
+          <button class="btn primary" id="fzYes">Confirm check-in</button>
+          <button class="btn ghost" id="fzNo">No</button>
+        </div>
+      </div>
+
       <div class="card monitor">
         <div class="state-chip" id="stateChip">waiting</div>
         <div class="num empty" id="num">·······</div>
         <div class="who" id="who"></div>
+        <div class="attend" id="attend" style="display:none"></div>
       </div>
 
       <div class="card manual">
-        <h3>Manual entry <span class="hint">when a card won't scan</span></h3>
-        <div class="row">
-          <input class="input" id="manualIn" placeholder="type a student number" inputmode="numeric" maxlength="7">
-          <button class="btn primary" id="manualBtn">Enter</button>
+        <h3>Manual entry <span class="hint">type or search — the name confirms who</span></h3>
+        <div class="manual-wrap">
+          <div class="row">
+            <input class="input" id="manualIn" placeholder="type a student number" inputmode="numeric" maxlength="7" autocomplete="off">
+            <button class="btn primary" id="manualBtn">Enter</button>
+          </div>
+          <div id="manualSuggest" class="suggest"></div>
         </div>
       </div>
 
@@ -303,7 +338,7 @@ const $ = s => document.querySelector(s);
 const api = () => (window.pywebview && window.pywebview.api) || MOCK;
 
 const ui = {
-  connected:false, mode:'keys', signedIn:false, sheetReady:false, headers:[], history:[],
+  connected:false, mode:'keys', signedIn:false, sheetReady:false, headers:[], history:[], roster:[],
 
   setConn(on, room){
     this.connected = on;
@@ -377,6 +412,7 @@ window.uiEvent = (type, p={}) => {
   else if(type==='focus'){ ui._focused=p.focused; ui.updateBanner(); }
   else if(type==='working'){ ui.setState('', 'checking…', p.id, ''); }
   else if(type==='result'){
+    hideFuzzy();
     const M={'checked-in':['ok','CHECKED IN'],'already':['warn','ALREADY IN'],
              'not-registered':['bad','NOT REGISTERED'],'error':['bad','SHEET ERROR'],
              'typed':['ok','TYPED'],'test':['warn','TEST — NOT TYPED']};
@@ -384,6 +420,9 @@ window.uiEvent = (type, p={}) => {
     ui.setState(cls, word, p.id, p.name);
     ui.addHistory(p.id, (M[p.status]?M[p.status][1].toLowerCase():p.status), cls, p.ts);
   }
+  else if(type==='roster'){ ui.roster = p.list||[]; }
+  else if(type==='attendance'){ showAttendance(p); }
+  else if(type==='fuzzy'){ showFuzzy(p); }
   else if(type==='signed_in'){
     ui.signedIn=p.ok;
     $('#signinBtn').style.display = p.ok ? 'none' : '';
@@ -424,22 +463,101 @@ $('#loadBtn').onclick = () => { ui.setSheetStat('loading…','warn'); api().load
 $('#syncBtn').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
 ['#colId','#colTick','#colName'].forEach(s => $(s).onchange = () => ui.applyCols());
 $('#manualBtn').onclick = submitManual;
-$('#manualIn').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 7); });
-$('#manualIn').addEventListener('keydown', e => { if(e.key==='Enter') submitManual(); });
-function submitManual(){ const v=($('#manualIn').value.match(/\d+/g)||[]).join(''); if(!v) return; $('#manualIn').value=''; api().manual(v); }
+$('#manualIn').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 7); renderSuggest(); });
+$('#manualIn').addEventListener('keydown', onManualKey);
+$('#manualIn').addEventListener('blur', () => setTimeout(hideSuggest, 120)); // let a click land first
+function submitManual(){ const v=($('#manualIn').value.match(/\d+/g)||[]).join(''); if(!v) return; $('#manualIn').value=''; hideSuggest(); api().manual(v); }
+
+/* ── manual-entry autofill: search the cached roster by partial UID ── */
+let _sugSel = -1;
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function renderSuggest(){
+  const v = $('#manualIn').value, box = $('#manualSuggest');
+  const m = (v && ui.roster.length) ? ui.roster.filter(r => r.id.startsWith(v)).slice(0,6) : [];
+  if(!m.length){ hideSuggest(); return; }
+  _sugSel = 0;
+  box.innerHTML = m.map((r,i) =>
+    `<div class="s-row${i===0?' sel':''}" data-id="${r.id}">`
+    + `<span class="s-id">u${r.id}</span>`
+    + `<span class="s-name">${r.name ? escapeHtml(r.name) : '—'}</span>`
+    + `<span class="s-hint">${i===0?'Tab ⇥':''}</span></div>`).join('');
+  box.querySelectorAll('.s-row').forEach(row => row.onclick = () => {
+    $('#manualIn').value = row.dataset.id; hideSuggest(); $('#manualIn').focus();
+  });
+  box.classList.add('show');
+}
+function hideSuggest(){ const b=$('#manualSuggest'); b.classList.remove('show'); b.innerHTML=''; _sugSel=-1; }
+function onManualKey(e){
+  const rows = [...$('#manualSuggest').querySelectorAll('.s-row')];
+  if(e.key==='Enter'){
+    if(rows.length && _sugSel>=0) $('#manualIn').value = rows[_sugSel].dataset.id;
+    submitManual(); return;
+  }
+  if(!rows.length) return;
+  if(e.key==='Tab'){ e.preventDefault(); $('#manualIn').value = rows[Math.max(0,_sugSel)].dataset.id; hideSuggest(); return; }
+  if(e.key==='ArrowDown'){ e.preventDefault(); _sugSel=Math.min(rows.length-1,_sugSel+1); }
+  else if(e.key==='ArrowUp'){ e.preventDefault(); _sugSel=Math.max(0,_sugSel-1); }
+  else if(e.key==='Escape'){ hideSuggest(); return; }
+  else return;
+  rows.forEach((r,i)=>r.classList.toggle('sel', i===_sugSel));
+}
+
+/* ── expected attendance % ── */
+function showAttendance(a){
+  const el = $('#attend');
+  if(!a || !a.total){ el.style.display='none'; return; }
+  const pct = Math.round(a.present / a.total * 100);
+  el.innerHTML = `<b>${a.present}</b> / ${a.total} checked in · ${pct}%`;
+  el.style.display = 'block';
+}
+
+/* ── fuzzy near-miss confirm ── */
+let _fuzzyId = null;
+function showFuzzy(p){
+  _fuzzyId = p.id || null;
+  $('#fzName').textContent = p.name || 'this student';
+  $('#fzId').textContent = 'u'+(p.id||'');
+  ui.setState('warn', 'CONFIRM?', p.scanned, '');
+  $('#fuzzyBar').style.display = 'block';
+}
+function hideFuzzy(){ $('#fuzzyBar').style.display='none'; _fuzzyId=null; }
+$('#fzYes').onclick = () => { if(_fuzzyId) api().confirm_fuzzy(_fuzzyId); hideFuzzy(); };
+$('#fzNo').onclick  = hideFuzzy;
 $('#csvBtn').onclick = () => api().download_csv();
 $('#newDayBtn').onclick = () => { if(confirm('Start a new day?\n\nThis forgets the room, sheet and scans, and shows a fresh pairing code.')) api().new_day(); };
 $('#pairSkip').onclick = () => $('#pairView').classList.add('hidden');
 
 /* ── MOCK for browser-preview design (no pywebview) ── */
+const MOCK_ROSTER = [
+  {id:'8221537',name:'Malakai King'}, {id:'8221530',name:'Priya Nathan'},
+  {id:'8221599',name:'Sam O’Neil'}, {id:'7752506',name:'Jordan Lee'},
+  {id:'8047692',name:'Aisha Rahman'}, {id:'6610042',name:'Chen Wei'},
+];
+function mockSheetData(){
+  window.uiEvent('roster',{list:MOCK_ROSTER});
+  window.uiEvent('attendance',{present:42,total:137});
+}
 const MOCK = {
   connect:(r)=>window.uiEvent('status',{kind:'ok',room:r}),
   disconnect:()=>window.uiEvent('status',{kind:'off'}),
-  set_mode:()=>{}, set_columns:()=>{}, sync:()=>setTimeout(()=>ui.setSheetStat('re-synced · 137 rows','ok'),400),
+  set_mode:()=>{}, set_columns:()=>mockSheetData(),
+  sync:()=>setTimeout(()=>{ui.setSheetStat('re-synced · 137 rows','ok');mockSheetData();},400),
   sign_in:()=>setTimeout(()=>window.uiEvent('signed_in',{ok:true}),500),
   load_sheet:()=>setTimeout(()=>window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,
       headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:['UID:','Attendence','Full Name:']}),500),
-  manual:(v)=>{window.uiEvent('working',{id:v});setTimeout(()=>window.uiEvent('result',{status:'checked-in',id:v,name:'Manual Entry',ts:clock()}),400);},
+  manual:(v)=>{
+    window.uiEvent('working',{id:v});
+    const exact = MOCK_ROSTER.find(r=>r.id===v);
+    const fuzzy = !exact && MOCK_ROSTER.find(r=>r.id.length===v.length
+                    && [...v].filter((c,i)=>c!==r.id[i]).length===1);
+    setTimeout(()=>{
+      if(exact) window.uiEvent('result',{status:'checked-in',id:v,name:exact.name,ts:clock()});
+      else if(fuzzy) window.uiEvent('fuzzy',{scanned:v,id:fuzzy.id,name:fuzzy.name,ts:clock()});
+      else window.uiEvent('result',{status:'not-registered',id:v,name:'',ts:clock()});
+    },400);
+  },
+  confirm_fuzzy:(id)=>{ const r=MOCK_ROSTER.find(x=>x.id===id); window.uiEvent('working',{id});
+    setTimeout(()=>window.uiEvent('result',{status:'checked-in',id,name:r?r.name:'',ts:clock()}),300); },
   download_csv:()=>{}, pair_qr:async()=>({room:'9F2GM2',img:mockQR()}), set_focus:()=>{}, get_state:()=>{},
   new_day:()=>{ ui.doReset(); window.uiEvent('show_pairing',{room:'NEWDAY',img:mockQR()}); },
 };
@@ -461,6 +579,7 @@ if(!window.pywebview){ // preview seed
   ui.setMode('sheet'); ui.setConn(true,'9F2GM2'); ui._focused=true;
   window.uiEvent('signed_in',{ok:true});
   window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:['UID:','Attendence','Full Name:']});
+  ui.roster = MOCK_ROSTER; window.uiEvent('attendance',{present:42,total:137});
   window.uiEvent('result',{status:'checked-in',id:'8221537',name:'Malakai King',ts:'23:31:41'});
   ui.addHistory('7752506','already','warn','23:30:02');
   ui.addHistory('8047692','checked in','ok','23:27:00');

@@ -248,6 +248,13 @@ class SheetSession:
                 self._reload_locked()          # maybe rows were added since load
                 rows = self._find_all(target)
             if not rows:
+                # No exact match. If exactly one roster UID is a single digit off, it's
+                # likely a form-typo in the sheet — offer it for the operator to confirm
+                # by name rather than silently rejecting a real student.
+                fuzz = self._find_fuzzy(target)
+                if len(fuzz) == 1:
+                    return {"status": "fuzzy", "name": fuzz[0]["name"],
+                            "id": fuzz[0]["id"], "row": fuzz[0]["row"], "rows": []}
                 return {"status": "not-registered", "name": "", "row": None, "rows": []}
 
             name = ""
@@ -273,6 +280,53 @@ class SheetSession:
                 self._set_cell(r, self.tick_i, "TRUE")   # keep local cache in sync
             return {"status": "checked-in", "name": name,
                     "row": (to_tick[0] + 1), "rows": sheet_rows}
+
+    def roster(self):
+        """[{id, name}] for every row that has a UID — powers manual-entry autofill."""
+        with self._lock:
+            out = []
+            if self.id_i is None:
+                return out
+            seen = set()
+            for r in range(1, len(self.values)):
+                uid = normalize(self._cell(r, self.id_i))
+                if not uid or uid in seen:
+                    continue
+                seen.add(uid)
+                name = self._cell(r, self.name_i) if self.name_i is not None else ""
+                out.append({"id": uid, "name": str(name)})
+            return out
+
+    def attendance(self):
+        """Expected attendance: how many rows have a TRUE/FALSE tick box, and how many
+        are TRUE."""
+        with self._lock:
+            if self.tick_i is None:
+                return {"present": 0, "total": 0}
+            present = total = 0
+            for r in range(1, len(self.values)):
+                val = str(self._cell(r, self.tick_i)).strip().upper()
+                if val in ("TRUE", "FALSE"):
+                    total += 1
+                    if val == "TRUE":
+                        present += 1
+            return {"present": present, "total": total}
+
+    def _find_fuzzy(self, target):
+        """Roster UIDs that differ from `target` by exactly one digit (same length)."""
+        out = []
+        if not target or self.id_i is None:
+            return out
+        seen = set()
+        for r in range(1, len(self.values)):
+            uid = normalize(self._cell(r, self.id_i))
+            if len(uid) != len(target) or uid == target or uid in seen:
+                continue
+            if sum(1 for a, b in zip(uid, target) if a != b) == 1:
+                seen.add(uid)
+                name = self._cell(r, self.name_i) if self.name_i is not None else ""
+                out.append({"id": uid, "name": str(name), "row": r + 1})
+        return out
 
     def refresh(self):
         with self._lock:

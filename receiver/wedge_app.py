@@ -51,7 +51,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.53"   # shared version across the Mac app + web app
+VERSION        = "14.54"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -306,10 +306,38 @@ class Api:
     def _checkin_result(self, data, sid, ts, res):
         status = res.get("status", "error")
         name = res.get("name", "")
+        if status == "fuzzy":
+            # Near-miss (one digit off a roster UID). Don't record/tick yet — ask the
+            # operator to confirm by name (cures form-typos in the sheet).
+            self._emit("fuzzy", {"scanned": sid, "id": res.get("id", ""),
+                                 "name": name, "ts": ts})
+            self.bridge.send_status(data.get("seq"), data.get("dev"), "fuzzy", name, sid)
+            return
         self._record(ts, sid, status)
         self._emit("result", {"status": status, "id": sid,
                               "name": name if status != "error" else "", "ts": ts})
         self.bridge.send_status(data.get("seq"), data.get("dev"), status, name, sid)
+        if status == "checked-in":
+            self._push_attendance()
+
+    def confirm_fuzzy(self, cand_id):
+        """Operator confirmed a fuzzy match — check in the candidate UID (exact match)."""
+        cand_id = "".join(ch for ch in str(cand_id or "") if ch.isdigit())
+        if cand_id:
+            self._handle_scan({"seq": None, "dev": "manual"}, cand_id)
+
+    def _push_sheet_data(self):
+        try:
+            self._emit("roster", {"list": self.sheet.roster()})
+        except Exception:
+            pass
+        self._push_attendance()
+
+    def _push_attendance(self):
+        try:
+            self._emit("attendance", self.sheet.attendance())
+        except Exception:
+            pass
 
     def _type_id(self, sid):
         try:
@@ -401,6 +429,7 @@ class Api:
             self.sheet_ready = True
             self._emit("sheet_status", {"text": f"ready · {self.sheet.tab} · {id_col} → {tick_col}",
                                        "kind": "ok"})
+            self._push_sheet_data()   # roster (for autofill) + attendance %
         except Exception as e:
             self.sheet_ready = False
             self._emit("sheet_status", {"text": f"column error: {e}", "kind": "bad"})
@@ -416,6 +445,8 @@ class Api:
             self.sheet.refresh()
             n = max(0, len(self.sheet.values) - 1)
             self._emit("sheet_status", {"text": f"re-synced · {self.sheet.tab} · {n} rows", "kind": "ok"})
+            if self.sheet_ready:
+                self._push_sheet_data()
         except Exception as e:
             self._emit("sheet_status", {"text": f"sync failed: {str(e)[:40]}", "kind": "bad"})
 
