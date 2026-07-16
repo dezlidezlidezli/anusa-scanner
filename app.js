@@ -414,8 +414,10 @@ function showResult(status, id, name) {
   }, RESULT_MS);
 }
 
-function flashGreen() {
-  const el = $('#successFlash');
+// Neutral grey flash to acknowledge a raw scan/read. NOT green — the check-in hasn't been
+// verified against the sheet yet; the green success is showResult() on the receiver's result.
+function flashScan() {
+  const el = $('#scanFlash');
   el.style.opacity = '1';
   el.style.display = 'block';
   requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -677,7 +679,7 @@ function handleAccept(id) {
   if (state.lastAccepted.id === id && (now - state.lastAccepted.t) < DUP_WINDOW_MS) return;
   state.lastAccepted = { id, t: now };
 
-  flashGreen(); flashReticle();   // sound now plays on the check-in result, not the scan
+  flashScan(); flashReticle();   // grey — a scan, not a confirmed check-in; sound plays on the result
   setReadout(id, '', '');
   sendScan(id, 'ocr');
 }

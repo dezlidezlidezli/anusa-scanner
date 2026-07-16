@@ -247,7 +247,9 @@
 </style>
 </head>
 <body>
-<div id="successFlash" style="display:none;position:fixed;inset:0;background:rgba(52,199,89,0.65);z-index:9999;pointer-events:none;"></div>
+<!-- Neutral GREY flash on a raw scan/read — a scan isn't a check-in. Green is reserved for
+     the actual check-in result (#result) once the receiver confirms against the sheet. -->
+<div id="scanFlash" style="display:none;position:fixed;inset:0;background:rgba(128,130,138,0.55);z-index:9999;pointer-events:none;"></div>
 <div id="result" aria-hidden="true">
   <div class="glyph"></div>
   <div class="word"></div>
@@ -339,7 +341,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.60</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.61</p>
 </div>
 
 <div class="toast" id="toast"></div>
