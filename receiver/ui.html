@@ -147,6 +147,8 @@
   .modal .qr{width:250px;height:250px;border-radius:12px;background:#fff;display:block;margin:0 auto}
   .modal .room{margin-top:16px;font-family:var(--mono);font-weight:700;color:var(--blue);font-size:15px;letter-spacing:.06em}
   .modal .x{margin-top:18px}
+  .pantry-modal{text-align:left;max-width:470px;width:92vw}
+  .pantry-modal p{text-align:left;margin-bottom:16px}
 
   /* default pairing screen — shown until a phone says hello */
   .pair-view{position:fixed;inset:0;background:var(--bg);z-index:60;display:flex;
@@ -175,7 +177,7 @@
     <div class="spacer"></div>
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.46</div>
+    <div class="ver" id="ver">v14.47</div>
   </header>
 
   <main>
@@ -198,28 +200,13 @@
         <h3>On scan</h3>
         <div class="seg" id="modeSeg">
           <button data-mode="keys" class="on">Type keystrokes</button>
-          <button data-mode="sheet">Google Sheet</button>
+          <button data-mode="sheet">Union Pantry</button>
         </div>
-
-        <div id="sheetPanel" style="display:none">
+        <div id="pantrySummary" style="display:none">
           <div class="divider"></div>
-          <div class="row" id="signedRow" style="justify-content:space-between">
-            <button class="btn ghost" id="signinBtn">Sign in with Google</button>
-            <span class="who" id="signedWho"></span>
-          </div>
-          <label class="fld" style="margin-top:12px">SHEET URL</label>
-          <div class="row">
-            <input class="input" id="sheetUrl" placeholder="paste Google Sheet link" style="flex:1">
-            <button class="btn primary" id="loadBtn">Load</button>
-          </div>
-          <div class="cols" style="margin-top:12px">
-            <label>ID column</label><select class="input" id="colId"></select>
-            <label>Tick column</label><select class="input" id="colTick"></select>
-            <label>Name column</label><select class="input" id="colName"></select>
-          </div>
-          <div class="row" style="margin-top:12px;justify-content:space-between">
-            <span class="chip" id="sheetChip"><span class="dot"></span><span id="sheetStat">sign in, then load a sheet</span></span>
-            <button class="btn ghost" id="syncBtn" style="padding:6px 11px;font-size:12px">↻ Re-sync</button>
+          <div class="row" style="justify-content:space-between">
+            <span class="chip" id="pantryChip"><span class="dot"></span><span id="pantryStat">not set up</span></span>
+            <button class="btn ghost" id="pantryEdit" style="padding:6px 12px;font-size:12px">Edit setup</button>
           </div>
         </div>
       </div>
@@ -266,6 +253,32 @@
   </div>
 </div>
 
+<div class="modal-back" id="pantryBack">
+  <div class="modal pantry-modal">
+    <h2>Union&nbsp;Pantry check-in</h2>
+    <p>Sign in, paste the roster sheet, then choose the columns to check students in.</p>
+    <div class="row" id="signedRow" style="justify-content:space-between;margin-bottom:6px">
+      <button class="btn ghost" id="signinBtn">Sign in with Google</button>
+      <span class="who" id="signedWho"></span>
+    </div>
+    <label class="fld" style="margin-top:10px">SHEET URL</label>
+    <div class="row">
+      <input class="input" id="sheetUrl" placeholder="paste the roster sheet link" style="flex:1">
+      <button class="btn primary" id="loadBtn">Load</button>
+    </div>
+    <div class="cols" style="margin-top:14px">
+      <label>ID column</label><select class="input" id="colId"></select>
+      <label>Tick column</label><select class="input" id="colTick"></select>
+      <label>Name column</label><select class="input" id="colName"></select>
+    </div>
+    <div class="row" style="margin-top:14px;justify-content:space-between">
+      <span class="chip" id="sheetChip"><span class="dot"></span><span id="sheetStat">sign in, then load a sheet</span></span>
+      <button class="btn ghost" id="syncBtn" style="padding:6px 11px;font-size:12px">↻ Re-sync</button>
+    </div>
+    <button class="btn primary wide" id="pantryDone" style="margin-top:20px">Start scanning</button>
+  </div>
+</div>
+
 <div class="modal-back" id="qrBack">
   <div class="modal">
     <h2>Scan with your phone camera</h2>
@@ -299,7 +312,7 @@ const ui = {
   setMode(m){
     this.mode = m;
     document.querySelectorAll('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode===m));
-    $('#sheetPanel').style.display = m==='sheet' ? 'block' : 'none';
+    $('#pantrySummary').style.display = m==='sheet' ? 'block' : 'none';
     this.updateBanner();
   },
   updateBanner(){ $('#banner').classList.toggle('show', this.mode==='keys' && this._focused); },
@@ -339,7 +352,10 @@ const ui = {
     if(!this.headers.length) return;
     api().set_columns($('#colId').value, $('#colTick').value, $('#colName').value);
   },
-  setSheetStat(text, kind){ $('#sheetStat').textContent=text; $('#sheetChip').className='chip '+(kind||''); },
+  setSheetStat(text, kind){   // reflect in the modal and the on-card summary
+    ['#sheetStat','#pantryStat'].forEach(s=>{const e=$(s); if(e) e.textContent=text;});
+    ['#sheetChip','#pantryChip'].forEach(s=>{const e=$(s); if(e) e.className='chip '+(kind||'');});
+  },
   doReset(){   // "New day" — forget the session
     this.history=[]; $('#histList').innerHTML='<li class="empty-hint">Scans will appear here.</li>';
     this.setState('', 'waiting', '', '');
@@ -347,6 +363,7 @@ const ui = {
     this.sheetReady=false; this.setSheetStat('sign in, then load a sheet','');
     ['#colId','#colTick','#colName'].forEach(s=>$(s).innerHTML='');
     $('#sheetUrl').value='';
+    closePantry();
   },
 };
 
@@ -382,7 +399,15 @@ $('#pairBtn').onclick = async () => {
 };
 $('#qrClose').onclick = () => $('#qrBack').classList.remove('show');
 $('#qrBack').onclick = e => { if(e.target.id==='qrBack') $('#qrBack').classList.remove('show'); };
-document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => { ui.setMode(b.dataset.mode); api().set_mode(b.dataset.mode); });
+document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => {
+  ui.setMode(b.dataset.mode); api().set_mode(b.dataset.mode);
+  if(b.dataset.mode==='sheet') openPantry();     // Union Pantry → open the setup pop-up
+});
+function openPantry(){ $('#pantryBack').classList.add('show'); }
+function closePantry(){ $('#pantryBack').classList.remove('show'); }
+$('#pantryEdit').onclick = openPantry;
+$('#pantryDone').onclick = closePantry;
+$('#pantryBack').onclick = e => { if(e.target.id==='pantryBack') closePantry(); };
 $('#signinBtn').onclick = () => { $('#signedWho').textContent='opening browser…'; api().sign_in(); };
 $('#loadBtn').onclick = () => { ui.setSheetStat('loading…','warn'); api().load_sheet($('#sheetUrl').value.trim()); };
 $('#syncBtn').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
