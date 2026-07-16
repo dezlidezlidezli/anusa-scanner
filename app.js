@@ -48,6 +48,7 @@ const state = {
   busy: false,
   lastAccepted: { id: null, t: 0 },
   suppressId: null,   // an id the user just deleted — ignored until the card leaves the frame
+  enabledRots: [0, 1, 2, 3],   // which rotations to search — reset to all on every load
 
   history: (() => { try { return JSON.parse(localStorage.getItem('wedge.hist') || '[]'); } catch (e) { return []; } })(),
   audio: null,
@@ -519,11 +520,26 @@ function resetRtState() {
   _focusPeak = 0; _blurSkips = 0;   // fresh sharpness baseline for the new session
   state.suppressId = null;   // fresh search — the card left / a new session began
   // Bias the search toward whichever orientation last CONFIRMED so repeat sessions
-  // find the right rotation on the first probe instead of cycling all four again.
+  // find the right rotation on the first probe. Only search the orientations the user
+  // left enabled in Settings (all 4 by default each load).
+  const en = (state.enabledRots && state.enabledRots.length) ? state.enabledRots : [0, 1, 2, 3];
   const last = Number(localStorage.getItem('wedge.rot'));
-  _rtSearchOrder = (last >= 0 && last <= 3)
-    ? [last, ...[0, 1, 2, 3].filter(r => r !== last)]
-    : [0, 1, 2, 3];
+  _rtSearchOrder = en.includes(last) ? [last, ...en.filter(r => r !== last)] : en.slice();
+}
+
+// Called when the orientation checkboxes change — apply live without a rescan.
+function applyEnabledRots() {
+  let en = [0, 1, 2, 3].filter(i => $('#rot' + i).checked);
+  if (!en.length) {                       // never allow zero
+    en = [0, 1, 2, 3];
+    en.forEach(i => { $('#rot' + i).checked = true; });
+    toast('Keep at least one orientation');
+  }
+  state.enabledRots = en;
+  const last = Number(localStorage.getItem('wedge.rot'));
+  _rtSearchOrder = en.includes(last) ? [last, ...en.filter(r => r !== last)] : en.slice();
+  _rtSearchPos = 0;
+  if (_rtLocked !== null && !en.includes(_rtLocked)) resetRtState();  // drop a disabled lock
 }
 
 function extractId(text, nDigits, prefix, startSet) {
@@ -976,6 +992,7 @@ function wireUI() {
   $('#goBtn').addEventListener('click', onStart);
   $('#pauseBtn').addEventListener('click', onPause);
   $('#reloadBtn').addEventListener('click', forceReload);
+  [0, 1, 2, 3].forEach(i => $('#rot' + i).addEventListener('change', applyEnabledRots));
   $('#pairManual').addEventListener('click', () => {
     const v = prompt('Enter the room code shown on the receiver:');
     if (v == null) return;
