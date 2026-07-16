@@ -13,7 +13,6 @@ const DEFAULTS = {
   startDigits: '5678',                             // accepted first digits; blank = any
   mode: 'bridge',                                  // 'bridge' | 'clip'
   broker: 'wss://broker.emqx.io:8084/mqtt',
-  engine: 'tesseract',                             // 'tesseract' (default) | 'paddle' (ML, experimental)
 };
 
 function randomRoom() {
@@ -41,16 +40,13 @@ const state = {
   key: null,               // CryptoKey derived from room
   client: null,            // mqtt client
   connected: false,
-  worker: null,            // tesseract
-  workerReady: false,
-  paddleReady: false,      // PaddleOCR (ONNX) engine loaded (experimental, opt-in)
+  paddleReady: false,      // PaddleOCR (ONNX) engine loaded
   stream: null,
   track: null,
   scanning: false,
   busy: false,
   lastAccepted: { id: null, t: 0 },
   suppressId: null,   // an id the user just deleted — ignored until the card leaves the frame
-  enabledRots: [0, 1, 2, 3],   // which rotations to search — reset to all on every load
 
   history: (() => { try { return JSON.parse(localStorage.getItem('wedge.hist') || '[]'); } catch (e) { return []; } })(),
   audio: null,
@@ -429,45 +425,10 @@ function flashGreen() {
   }));
 }
 
-async function initOCR() {
-  if (state.workerReady) return;
-  if (typeof Tesseract === 'undefined') throw new Error('OCR engine failed to load — check your connection and reload.');
-  setReadout('', 'loading OCR engine…', '');
-  const worker = await Tesseract.createWorker('eng');
-  // SINGLE_BLOCK: the card fills a variable part of the frame and carries several text
-  // rows (name, number, "STUDENT", university text). Block segmentation isolates the
-  // number's line and finds the 7-digit run. SINGLE_LINE broke this: when the whole card
-  // fits the frame it read all rows as one line → junk.
-  const psm = (Tesseract.PSM && Tesseract.PSM.SINGLE_BLOCK) ? Tesseract.PSM.SINGLE_BLOCK : '6';
-  await worker.setParameters({
-    tessedit_char_whitelist: '0123456789',
-    tessedit_pageseg_mode: psm,
-    user_defined_dpi: '300',
-  });
-  state.worker = worker;
-  state.workerReady = true;
-  setReadout('', 'ready — frame the number', '');
-}
-
-// If a recognise() ever hangs (iOS can kill the Tesseract worker under memory pressure),
-// the scan loop would otherwise sit with state.busy stuck true and stop OCR-ing entirely
-// (symptom: only 1 frame is captured, reads never confirm). Rebuild the worker so the
-// loop recovers on its own.
-const OCR_TIMEOUT_MS = 7000;
-let _reiniting = false;
-async function reinitOCR() {
-  if (_reiniting) return;
-  _reiniting = true;
-  const dead = state.worker;
-  state.worker = null; state.workerReady = false;
-  try { if (dead) await dead.terminate(); } catch (e) {}
-  try { await initOCR(); } catch (e) {}
-  _reiniting = false;
-}
-
-// ── PaddleOCR (ONNX) engine — experimental, opt-in via Settings ─────────────────
-// Loaded lazily so Tesseract users never pay for it. ONNX Runtime comes from the CDN
-// (like tesseract.js); the ~10MB models are served from ./models and cached by the SW.
+// ── PaddleOCR (ONNX) engine ─────────────────────────────────────────────────────
+// PP-OCR (DBNet detection + PP-OCRv5 recognition) via onnxruntime-web. The detector
+// finds text at any angle, so there is no rotation search. ONNX Runtime comes from the
+// CDN; the ~10MB models are served from ./models and cached by the service worker.
 const ORT_SRC = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
 function loadScript(src) {
   return new Promise((res, rej) => {
@@ -482,14 +443,14 @@ async function loadPaddle() {
   if (state.paddleReady) return;
   if (_paddleLoading) return _paddleLoading;
   _paddleLoading = (async () => {
-    setReadout('', 'loading ML OCR…', '');
+    setReadout('', 'loading OCR engine…', '');
     await loadScript(ORT_SRC + 'ort.min.js');
     window.ort.env.wasm.numThreads = 1;             // iOS Safari: single-thread WASM is safest
     window.ort.env.wasm.wasmPaths = ORT_SRC;
     await PaddleOCR.init({ ort: window.ort, detUrl: './models/det.onnx',
                            recUrl: './models/rec.onnx', dictUrl: './models/en_dict.txt' });
     state.paddleReady = true;
-    setReadout('', 'ready (ML) — frame the number', '');
+    setReadout('', 'ready — frame the number', '');
   })();
   try { await _paddleLoading; } finally { _paddleLoading = null; }
 }
@@ -499,48 +460,55 @@ function validateId(digits) {
   return extractId(digits, state.settings.digits, state.settings.prefix, state.settings.startDigits);
 }
 
-// PaddleOCR scan tick — no rotation search (the detector handles orientation). Same
-// two-in-a-row confirm: a value must read identically on two consecutive frames.
+// Scan tick — no rotation search (the detector handles orientation). Two-in-a-row confirm:
+// a value must read identically on two consecutive frames before it's accepted, so a lone
+// misread is never sent. _pSentId then blocks re-sends of a lingering card until it leaves.
 let _pCandId = null;   // pending candidate
-let _pSentId = null;   // already accepted this presentation — blocks re-sends until the card leaves
-async function scanTickPaddle() {
-  const frame = grabFrame(0);
-  if (!frame) return;
-  const fs = focusScore(frame);
-  _focusPeak = Math.max(fs, _focusPeak * 0.92);
-  if (fs < _focusPeak * SHARP_FRAC && _blurSkips < MAX_BLUR_SKIP) { _blurSkips++; return; }
-  _blurSkips = 0;
-  const res = await PaddleOCR.read(frame, { validate: validateId });
-  const id = res.id;
-  if (dbgVisible) { drawDbgCanvas(frame, 'PP ' + (id || '∅'));
-    dbgRecord('PP', res.lines.map(l => l.digits).filter(Boolean).join(' '), id); }
-  if (id && id === _pCandId) {
-    if (_pSentId !== id) { handleAccept(id); _pSentId = id; }
-  } else if (id) {
-    _pCandId = id;
-  } else {
-    _pCandId = null; _pSentId = null;
-  }
+let _pSentId = null;   // already accepted this presentation — cleared when the card leaves
+async function scanTick() {
+  if (!state.scanning || state.busy || !state.paddleReady) return;
+  state.busy = true;
+  try {
+    const frame = grabFrame();
+    if (!frame) return;
+    // Skip motion-blurred frames (cheap) so OCR only spends time on sharp ones.
+    const fs = focusScore(frame);
+    _focusPeak = Math.max(fs, _focusPeak * 0.92);
+    if (fs < _focusPeak * SHARP_FRAC && _blurSkips < MAX_BLUR_SKIP) {
+      _blurSkips++;
+      if (dbgVisible) drawDbgCanvas(frame, '~blur');
+      return;
+    }
+    _blurSkips = 0;
+    const res = await PaddleOCR.read(frame, { validate: validateId });
+    const id = res.id;
+    const raw = res.lines.map(l => l.digits).filter(Boolean).join(' ');
+    if (dbgVisible) { drawDbgCanvas(frame, id || '∅'); }
+    captureFrame(id || '∅', frame, raw, id);
+    dbgRecord('PP', raw, id);
+    if (id && id === _pCandId) {
+      if (_pSentId !== id) { handleAccept(id); _pSentId = id; }
+    } else if (id) {
+      _pCandId = id;
+    } else {
+      _pCandId = null; _pSentId = null;
+    }
+  } catch (e) { /* transient error: skip frame */ }
+  finally { state.busy = false; }
 }
 
-/* map the on-screen reticle to source-video pixels (object-fit: cover) */
-// Grab the full video frame with rotIdx additional 90°CCW steps beyond the base
-// portrait correction. rotIdx 0 = most common (card landscape on table, phone portrait).
-// The reticle is cosmetic guidance only — never used for backend cropping.
-const GRAB_SCALE = 0.75;   // OCR frame size as a fraction of native video (see below)
-function grabFrame(rotIdx) {
+/* Grab the full video frame (portrait-corrected). The detector is orientation-agnostic,
+   so there is no rotation search — one grab per tick. */
+const GRAB_SCALE = 0.75;   // capture size as a fraction of native video (speed vs detail)
+function grabFrame() {
   const video = $('#video');
   const stage = video.getBoundingClientRect();
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return null;
   const portrait = stage.height > stage.width;
-  const totalRot = ((portrait ? 1 : 0) + (rotIdx || 0)) % 4;
-  const rad = -totalRot * Math.PI / 2; // negative = CCW
-  // OCR resolution as a fraction of the native video. Bigger = larger, crisper digits →
-  // more reliable reads on small/skewed/marginal cards; smaller = faster. 0.5 was too low
-  // (7 digits ≈ 14px each — under Tesseract's comfort zone). Tunable vs speed.
+  const rad = -(portrait ? 1 : 0) * Math.PI / 2;   // upright the common portrait hold (cosmetic)
   const srcW = Math.round(vw * GRAB_SCALE), srcH = Math.round(vh * GRAB_SCALE);
-  const swap = (totalRot % 2 === 1);
+  const swap = portrait;
   const outW = swap ? srcH : srcW, outH = swap ? srcW : srcH;
   const out = document.createElement('canvas');
   out.width = outW; out.height = outH;
@@ -551,60 +519,12 @@ function grabFrame(rotIdx) {
   return greyscaleStretch(out);
 }
 
-// Rotation search + lock.
-//
-// The card can be presented in any of the four 90° orientations. A single 7-digit
-// read is NOT trustworthy: a wrong/upside-down orientation still OCRs junk 7-digit
-// numbers out of the barcode, dates and other card fields — but those junk reads are
-// DIFFERENT every frame. The real student number is the same every frame. So we only
-// trust a rotation once it returns the *same* 7-digit value twice in a row at that same
-// rotation. That single rule rejects wrong orientations and confirms the right one.
-//
-// One OCR per tick keeps memory flat (no iOS tab crashes). Flow while searching:
-//   • probe the next rotation in the cycle
-//   • a valid read → hold it as a "candidate" and re-check that same rotation next tick
-//   • candidate reproduces → lock + accept;  candidate changes/null → discard, move on
-let _rtLocked = null;        // null = searching; 0-3 = locked rotation
-let _rtFailCount = 0;
-let _rtSearchOrder = [0, 1, 2, 3];
-let _rtSearchPos = 0;
-let _candR = null;           // rotation of a pending candidate awaiting confirmation
-let _candId = null;          // the candidate's 7-digit value
-let _lockLastId = null;      // previous read at the locked rotation (for 2-in-a-row)
-let _lockSentId = null;      // id already sent during the CURRENT lock session — blocks
-                             // re-sends of a lingering card WITHOUT a timer (blur-proof)
-// Give up a locked rotation after this many non-confirming SHARP frames (nulls, or junk
-// values that never reproduce). Low so a card turned to a NEW orientation is picked up
-// fast instead of being ignored while we cling to the old rotation. Tunable.
-const RT_LOSE_LOCK = 3;
-
+// Reset per-session scan state (called on start / after a reset). No rotation lock any more —
+// just the two-in-a-row confirm + sharpness baseline.
 function resetRtState() {
-  _rtLocked = null; _rtFailCount = 0; _rtSearchPos = 0;
-  _candR = null; _candId = null; _lockLastId = null; _lockSentId = null;
-  _pCandId = null; _pSentId = null;   // PaddleOCR confirm state
-  _focusPeak = 0; _blurSkips = 0;   // fresh sharpness baseline for the new session
-  state.suppressId = null;   // fresh search — the card left / a new session began
-  // Bias the search toward whichever orientation last CONFIRMED so repeat sessions
-  // find the right rotation on the first probe. Only search the orientations the user
-  // left enabled in Settings (all 4 by default each load).
-  const en = (state.enabledRots && state.enabledRots.length) ? state.enabledRots : [0, 1, 2, 3];
-  const last = Number(localStorage.getItem('wedge.rot'));
-  _rtSearchOrder = en.includes(last) ? [last, ...en.filter(r => r !== last)] : en.slice();
-}
-
-// Called when the orientation checkboxes change — apply live without a rescan.
-function applyEnabledRots() {
-  let en = [0, 1, 2, 3].filter(i => $('#rot' + i).checked);
-  if (!en.length) {                       // never allow zero
-    en = [0, 1, 2, 3];
-    en.forEach(i => { $('#rot' + i).checked = true; });
-    toast('Keep at least one orientation');
-  }
-  state.enabledRots = en;
-  const last = Number(localStorage.getItem('wedge.rot'));
-  _rtSearchOrder = en.includes(last) ? [last, ...en.filter(r => r !== last)] : en.slice();
-  _rtSearchPos = 0;
-  if (_rtLocked !== null && !en.includes(_rtLocked)) resetRtState();  // drop a disabled lock
+  _pCandId = null; _pSentId = null;
+  _focusPeak = 0; _blurSkips = 0;
+  state.suppressId = null;
 }
 
 function extractId(text, nDigits, prefix, startSet) {
@@ -625,10 +545,8 @@ let dbgVisible = false;
 const _dbgLog = [];
 function dbgRecord(mode, rawText, candidate) {
   if (!dbgVisible) return;
-  // A read confirms if it matches the pending candidate (search) or the previous
-  // read at the locked rotation (fast path) — i.e. same value twice in a row.
-  const confirming = candidate &&
-    (candidate === _candId || (_rtLocked !== null && candidate === _lockLastId));
+  // A read confirms when it matches the pending candidate — i.e. same value twice in a row.
+  const confirming = candidate && candidate === _pCandId;
   const status = confirming ? '✓CONFIRM' : candidate ? '(1st)' : '';
   const entry = `[${mode}] "${rawText.replace(/\s+/g,' ').trim().slice(0,48)}" → ${candidate||'null'} ${status}`;
   _dbgLog.unshift(entry);
@@ -713,26 +631,6 @@ function drawDbgCanvas(frame, modeLabel) {
   dctx.fillStyle = '#ff7a1a';         dctx.fillText(label, 2, H-Math.round(W*0.08));
 }
 
-async function ocrFrame(frame, modeLabel) {
-  let data, to;
-  try {
-    const res = await Promise.race([
-      state.worker.recognize(frame),
-      new Promise((_, rej) => { to = setTimeout(() => rej(new Error('ocr-timeout')), OCR_TIMEOUT_MS); }),
-    ]);
-    clearTimeout(to);
-    data = res.data;
-  } catch (e) {
-    clearTimeout(to);
-    reinitOCR();   // worker hung/died — rebuild it so the loop keeps going
-    return null;
-  }
-  const id = extractId(data.text || '', state.settings.digits, state.settings.prefix, state.settings.startDigits);
-  captureFrame(modeLabel, frame, data.text || '', id);
-  dbgRecord(modeLabel, data.text || '', id);
-  return id;
-}
-
 // ── sharpness gate ──────────────────────────────────────────────
 // Handheld scanning produces lots of motion-blurred frames. OCR-ing a blurry frame
 // wastes ~300–500ms AND tends to misread (which breaks the two-in-a-row confirm),
@@ -766,99 +664,10 @@ function focusScore(canvas) {
   return n ? sum / n : 0;
 }
 
-async function scanTick() {
-  if (!state.scanning || state.busy) return;
-  if (state.settings.engine === 'paddle') {          // experimental ML engine (opt-in)
-    if (!state.paddleReady) return;                  // still loading — skip until ready
-    state.busy = true;
-    try { await scanTickPaddle(); } catch (e) { /* skip frame */ } finally { state.busy = false; }
-    return;
-  }
-  if (!state.workerReady) return;
-  state.busy = true;
-  try {
-    // Full video frame — the reticle is cosmetic guidance only, never cropped to.
-    // Exactly ONE OCR pass per tick keeps memory flat so iOS Safari won't kill the tab.
-
-    // Pick which rotation to read: locked → known-good; candidate → recheck it;
-    // otherwise probe the next rotation in the search cycle.
-    let r, tag;
-    if (_rtLocked !== null)   { r = _rtLocked; tag = `RT${r}`; }
-    else if (_candR !== null) { r = _candR;    tag = `RT${r}=`; }   // rechecking candidate
-    else                      { r = _rtSearchOrder[_rtSearchPos]; tag = `RT${r}?`; }
-
-    const frame = grabFrame(r);
-    if (!frame) return;
-
-    // Skip motion-blurred frames (cheap) so OCR only spends time on sharp ones.
-    const fs = focusScore(frame);
-    _focusPeak = Math.max(fs, _focusPeak * 0.92);
-    if (fs < _focusPeak * SHARP_FRAC && _blurSkips < MAX_BLUR_SKIP) {
-      _blurSkips++;
-      if (dbgVisible) drawDbgCanvas(frame, tag + ' ~blur');
-      return;
-    }
-    _blurSkips = 0;
-
-    if (dbgVisible) drawDbgCanvas(frame, tag);
-    const id = await ocrFrame(frame, tag);
-
-    if (_rtLocked !== null) {
-      // Accept only when two consecutive reads at the locked rotation agree, so a lone
-      // misread is never sent. A *confirmed* read (same value twice) also proves the
-      // orientation is still right, so it clears the miss counter. Everything else counts
-      // as a miss — a null, OR a valid-but-DIFFERENT value (junk from a card that's been
-      // removed or turned to a new orientation, which changes every frame and never
-      // reproduces). After RT_LOSE_LOCK such misses we drop the lock and re-search, so a
-      // card in a new orientation is picked up in ~1s instead of being ignored while we
-      // cling to the old rotation.
-      if (id && id === _lockLastId) {
-        // Confirmed read of the locked card. Send it once per lock session: _lockSentId
-        // blocks every later read of the SAME card while it stays locked, so a card that
-        // lingers — or whose reads are spaced apart by blur skips — is never sent twice.
-        if (_lockSentId !== id) { handleAccept(id); _lockSentId = id; }
-        _rtFailCount = 0;
-      } else {
-        _rtFailCount++;
-      }
-      _lockLastId = id;
-      if (_rtFailCount >= RT_LOSE_LOCK) resetRtState();
-      return;
-    }
-
-    if (_candR !== null) {
-      // This tick re-checked a pending candidate rotation.
-      if (id && id === _candId) {
-        // Same 7-digit value twice in a row at the same rotation → trust and lock.
-        _rtLocked = r; _lockLastId = id; _rtFailCount = 0;
-        localStorage.setItem('wedge.rot', String(r)); // remember the CONFIRMED rotation
-        _candR = null; _candId = null;
-        handleAccept(id);
-        _lockSentId = id;   // this lock session has now sent this id
-      } else {
-        // Candidate didn't reproduce — it was noise from a wrong orientation. Move on.
-        _candR = null; _candId = null;
-        _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length;
-      }
-      return;
-    }
-
-    // Fresh probe of a search rotation. Require a confirming second read: a single valid
-    // 7-digit read is held as a candidate, and only sent if the very next read at the same
-    // rotation reproduces it — so a lone misread is never accepted.
-    if (id) { _candR = r; _candId = id; }   // hold it; next tick confirms or discards
-    else    { _rtSearchPos = (_rtSearchPos + 1) % _rtSearchOrder.length; }
-  } catch(e) { /* transient error: skip frame */ }
-  finally { state.busy = false; }
-}
-
-const DUP_WINDOW_MS = 1200;   // min gap before the SAME id can be re-sent across relocks
-// A card that stays in view is sent ONCE: the lock's _lockSentId (see scanTick) blocks
-// every repeat read while the card stays locked, no matter how its reads are spaced — so
-// blur skips or a brief re-lock can't produce a duplicate. This DUP_WINDOW_MS check is only
-// a backstop for the instant a shaky card drops and re-acquires its lock: it stops the same
-// id firing twice within the window. Once a card has left the frame (lock lost), presenting
-// it again always scans fresh.
+const DUP_WINDOW_MS = 1200;   // min gap before the SAME id can be re-sent
+// A card that stays in view is sent ONCE: _pSentId (see scanTick) blocks every repeat read
+// until the card leaves the frame. This DUP_WINDOW_MS check is a backstop for a shaky card
+// that briefly drops and re-acquires — it stops the same id firing twice within the window.
 function handleAccept(id) {
   const now = Date.now();
   // A scan the user explicitly deleted stays ignored until the card leaves the frame.
@@ -880,7 +689,7 @@ function handleAccept(id) {
 function resetDedupe() {
   state.lastAccepted = { id: null, t: 0 };
   state.suppressId = null;
-  _lockSentId = _lockLastId;   // null when searching; the in-view id when locked
+  _pSentId = _pCandId;   // mark the in-view card as handled so a reset can't instantly re-send it
 }
 
 // Self-rescheduling loop: the next OCR fires as soon as the previous one FINISHES,
@@ -1010,12 +819,7 @@ async function onStart() {
       }
     }
     if (!state.connected) connectBridge();
-    if (state.settings.engine === 'paddle') {
-      try { await loadPaddle(); }
-      catch (e) { toast('ML OCR failed — using Tesseract'); state.settings.engine = 'tesseract'; await initOCR(); }
-    } else {
-      await initOCR();
-    }
+    await loadPaddle();
     startScanning();
   } catch (e) {
     stopCamera();
@@ -1051,7 +855,6 @@ function openSheet() {
   $('#setDigits').value = s.digits;
   $('#setPrefix').value = s.prefix || '';
   $('#setStart').value = s.startDigits || '';
-  $('#setEngine').value = s.engine || 'tesseract';
   $('#setMode').value = s.mode;
   $('#setBroker').value = s.broker;
   $('#sheetBack').classList.add('open');
@@ -1067,24 +870,18 @@ function onSave() {
   s.digits = Math.max(4, Math.min(12, Number($('#setDigits').value) || DEFAULTS.digits));
   s.prefix = $('#setPrefix').value.replace(/\D/g, '').slice(0, Math.max(0, s.digits - 1));
   s.startDigits = [...new Set($('#setStart').value.replace(/\D/g, ''))].join(''); // unique digits, blank = any
-  s.engine = $('#setEngine').value === 'paddle' ? 'paddle' : 'tesseract';
   s.mode = $('#setMode').value === 'clip' ? 'clip' : 'bridge';
   s.broker = $('#setBroker').value.trim() || DEFAULTS.broker;
   saveSettings(s);
   refreshChrome();
   closeSheet();
   connectBridge();
-  // If they switched to the ML engine, start loading it now so it's ready to scan.
-  if (s.engine === 'paddle' && !state.paddleReady) {
-    loadPaddle().catch(e => { toast('ML OCR failed to load: ' + e.message); });
-  }
 }
 
 function wireUI() {
   $('#goBtn').addEventListener('click', onStart);
   $('#pauseBtn').addEventListener('click', onPause);
   $('#reloadBtn').addEventListener('click', forceReload);
-  [0, 1, 2, 3].forEach(i => $('#rot' + i).addEventListener('change', applyEnabledRots));
   $('#pairManual').addEventListener('click', () => {
     const v = prompt('Enter the room code shown on the receiver:');
     if (v == null) return;

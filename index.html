@@ -221,11 +221,6 @@
   .field .row button{
     border:1px solid var(--line);border-radius:10px;padding:0 14px;color:var(--muted);font-size:12px;letter-spacing:.06em
   }
-  .orient-row{display:flex;gap:8px}
-  .ckbx{display:flex;align-items:center;justify-content:center;gap:7px;flex:1;cursor:pointer;
-    font-family:var(--mono);font-size:13px;color:var(--text);
-    border:1px solid var(--line);border-radius:10px;padding:10px 6px}
-  .ckbx input{accent-color:var(--hivis);width:16px;height:16px;margin:0}
   .sheet .save{
     width:100%;background:var(--hivis);color:#fff;font-weight:700;font-size:15px;
     border-radius:12px;padding:14px;margin-top:4px;
@@ -332,22 +327,6 @@
     <input id="setStart" inputmode="numeric" autocomplete="off" placeholder="e.g. 5678">
   </div>
   <div class="field">
-    <label>Orientations to check — untick any you never scan (faster, all on each load)</label>
-    <div class="orient-row">
-      <label class="ckbx"><input type="checkbox" id="rot0" checked> RT0</label>
-      <label class="ckbx"><input type="checkbox" id="rot1" checked> RT1</label>
-      <label class="ckbx"><input type="checkbox" id="rot2" checked> RT2</label>
-      <label class="ckbx"><input type="checkbox" id="rot3" checked> RT3</label>
-    </div>
-  </div>
-  <div class="field">
-    <label for="setEngine">OCR engine — Tesseract is the tested default; PaddleOCR (ML) is experimental, better on tilted/glary cards</label>
-    <select id="setEngine">
-      <option value="tesseract">Tesseract (default)</option>
-      <option value="paddle">PaddleOCR — ML, handles rotation (experimental)</option>
-    </select>
-  </div>
-  <div class="field">
     <label for="setMode">Output</label>
     <select id="setMode">
       <option value="bridge">Bridge — type on paired computer</option>
@@ -360,13 +339,12 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.59</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.60</p>
 </div>
 
 <div class="toast" id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1/dist/jsQR.js" defer></script>
 <script src="./paddleocr.js" defer></script>
 <script src="./app.js" defer></script>

@@ -1,9 +1,9 @@
 'use strict';
 /* ANUSA Scanner service worker — cache-first app shell plus runtime caching of the
-   CDN-hosted OCR/relay libraries (tesseract core + traineddata are several MB;
-   after the first online load the app starts instantly). */
+   CDN library (mqtt, ONNX Runtime) and the local OCR models under ./models (~10MB);
+   after the first online load the app starts instantly and works offline. */
 
-const VERSION = 'anusa-scanner-v14-59';
+const VERSION = 'anusa-scanner-v14-60';
 const CORE = [
   './',
   './index.html',
@@ -29,10 +29,10 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-// Our own app shell (index.html, app.js, sw.js, manifest, the root) is served
-// NETWORK-FIRST so a fresh deploy lands immediately whenever the phone is online —
-// cache is only the offline fallback. The big CDN libraries (tesseract core +
-// traineddata, mqtt) stay cache-first for instant, offline-capable startup.
+// Our own app shell (index.html, app.js, paddleocr.js, sw.js, manifest, the root) is
+// served NETWORK-FIRST so a fresh deploy lands immediately whenever the phone is online —
+// cache is only the offline fallback. The big CDN libs (ONNX Runtime, mqtt) and the OCR
+// models stay cache-first for instant, offline-capable startup.
 function isAppShell(url) {
   return url.origin === self.location.origin &&
     (/\/(index\.html|app\.js|paddleocr\.js|sw\.js|manifest\.webmanifest)$/.test(url.pathname) ||
