@@ -20,7 +20,6 @@ import os
 import re
 import sys
 import threading
-import time
 from pathlib import Path
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -187,7 +186,6 @@ class SheetSession:
         self.headers = []
         self.values = []
         self.id_i = self.tick_i = self.name_i = None
-        self._last_reload = 0.0
 
     def open(self, url, tab=None):
         """Load a spreadsheet tab. Returns {title, tab, tabs, headers, rows}."""
@@ -249,12 +247,11 @@ class SheetSession:
                 return {"status": "not-registered", "name": "", "row": None, "rows": []}
             rows = self._find_all(target)
             if not rows:
-                self._reload_if_stale()        # maybe registered since load (debounced)
-                rows = self._find_all(target)
-            if not rows:
-                # No exact match. If exactly one roster UID is a single digit off, it's
-                # likely a form-typo in the sheet — offer it for the operator to confirm
-                # by name rather than silently rejecting a real student.
+                # The roster is fixed for a scan session, so a miss means "not on the list" —
+                # answer straight from the cache, no API round-trip (the Sync button reloads
+                # the sheet if it's edited mid-session).
+                # If exactly one roster UID is a single digit off, it's likely a form-typo in
+                # the sheet — offer it for the operator to confirm by name.
                 fuzz = self._find_fuzzy(target)
                 if len(fuzz) == 1:
                     return {"status": "fuzzy", "name": fuzz[0]["name"],
@@ -364,13 +361,6 @@ class SheetSession:
         self.values = self.svc.spreadsheets().values().get(
             spreadsheetId=self.sid, range=f"'{self.tab}'").execute().get("values", [])
         self.headers = self.values[0] if self.values else []
-        self._last_reload = time.monotonic()
-
-    def _reload_if_stale(self, max_age=5.0):
-        """Reload on a not-found ONLY if the cache is older than max_age — so a burst of
-        unregistered/typo'd scans doesn't fire a full sheet GET every time."""
-        if time.monotonic() - self._last_reload >= max_age:
-            self._reload_locked()
 
     def _find_all(self, target):
         return [r for r in range(1, len(self.values))
