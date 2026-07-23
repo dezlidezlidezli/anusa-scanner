@@ -573,8 +573,47 @@ async function loadPaddle() {
 }
 
 // Reuse the app's ID rule (length + prefix + first-digit whitelist) on PaddleOCR's reads.
-function validateId(digits) {
-  return extractId(digits, state.settings.digits, state.settings.prefix, state.settings.startDigits);
+// Called as validate(text, digits) — keep using the digit-only string, so student-number
+// reading behaves exactly as before.
+function validateId(text, digits) {
+  const d = (digits != null) ? digits : text;
+  return extractId(d, state.settings.digits, state.settings.prefix, state.settings.startDigits);
+}
+
+// ── Textbook Library: read a textbook code from the label ────────────────────────
+// The label reads ANUSA/H/TB/XYZ/123. ANUSA/H/TB is a fixed prefix (no value) — fuzzy-match
+// it to confirm we're actually reading a textbook label, then return ONLY the valuable part,
+// which is exactly 3 letters + "/" + 3 digits (e.g. PSY/101). Returns null otherwise.
+// Called as validate(text, digits) — uses the full text (letters + slashes), not just digits.
+const TB_PREFIX = ['ANUSA', 'H', 'TB'];
+const TB_TOL = [2, 1, 1];   // per-token fuzzy tolerance (edit distance) for the fixed prefix
+function extractTextbookCode(text) {
+  const up = String(text || '').toUpperCase();
+  // split on slash (OCR may render / as \ or |), keep alphanumerics within each token
+  const parts = up.split(/[\/\\|]+/).map(s => s.replace(/[^A-Z0-9]/g, '')).filter(Boolean);
+  if (parts.length < TB_PREFIX.length + 1) return null;
+  for (let i = 0; i < TB_PREFIX.length; i++)
+    if (_lev(parts[i], TB_PREFIX[i]) > TB_TOL[i]) return null;   // not a textbook label
+  const rest = parts.slice(TB_PREFIX.length);
+  // valuable part = 3 letters then 3 digits, whether OCR kept the slash ("XYZ/123") or not.
+  if (rest.length >= 2 && /^[A-Z]{3}$/.test(rest[0]) && /^[0-9]{3}$/.test(rest[1]))
+    return rest[0] + '/' + rest[1];
+  const m = rest[0] && rest[0].match(/^([A-Z]{3})([0-9]{3})$/);
+  return m ? (m[1] + '/' + m[2]) : null;
+}
+// Levenshtein edit distance (small strings only).
+function _lev(a, b) {
+  a = a || ''; b = b || '';
+  const m = a.length, n = b.length;
+  if (!m) return n; if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++)
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[n];
 }
 
 // Scan tick — no rotation search (the detector handles orientation). Two-in-a-row confirm:

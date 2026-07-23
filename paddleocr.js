@@ -200,11 +200,14 @@ const PaddleOCR = (() => {
     for (const box of boxes.slice(0, 8)) {          // read the strongest few regions
       let text = await recognize(cropBox(canvas, box, scaleX, scaleY, false));
       let digits = (text.match(/\d/g) || []).join('');
-      let v = validate(digits);
+      // validate(text, digits): digit-only readers (student number) keep using `digits` and
+      // behave exactly as before; readers that need the full string (letters/slashes, e.g. a
+      // textbook code) use `text`.
+      let v = validate(text, digits);
       if (!v) {   // maybe upside-down — try the 180° crop
         const text2 = await recognize(cropBox(canvas, box, scaleX, scaleY, true));
         const dig2 = (text2.match(/\d/g) || []).join('');
-        const v2 = validate(dig2);
+        const v2 = validate(text2, dig2);
         if (v2) { text = text2; digits = dig2; v = v2; }
       }
       lines.push({ text, digits, box, score: box.score });
