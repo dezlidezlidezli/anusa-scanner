@@ -702,16 +702,11 @@ async function scanTick() {
     _focusPeak = Math.max(fs, _focusPeak * 0.92);
     if (fs < _focusPeak * SHARP_FRAC && _blurSkips < MAX_BLUR_SKIP) {
       _blurSkips++;
-      if (dbgVisible) drawDbgCanvas(frame, '~blur');
       return;
     }
     _blurSkips = 0;
     const res = await PaddleOCR.read(frame, { validate: task.validate });
     const val = res.id;   // the validated value (student number OR textbook code)
-    const raw = res.lines.map(l => l.text).filter(Boolean).join(' ');
-    if (dbgVisible) { drawDbgCanvas(frame, val || '∅'); }
-    captureFrame(val || '∅', frame, raw, val);
-    dbgRecord('PP', raw, val);
     // Two-in-a-row confirm, then run the task's accept action.
     if (val && val === _pCandId) {
       if (_pSentId !== val) { task.accept(val); _pSentId = val; }
@@ -766,97 +761,6 @@ function extractId(text, nDigits, prefix, startSet) {
 }
 
 /* ────────────────────────── scan loop ───────────────────────── */
-
-let dbgVisible = false;
-
-const _dbgLog = [];
-function dbgRecord(mode, rawText, candidate) {
-  if (!dbgVisible) return;
-  // A read confirms when it matches the pending candidate — i.e. same value twice in a row.
-  const confirming = candidate && candidate === _pCandId;
-  const status = confirming ? '✓CONFIRM' : candidate ? '(1st)' : '';
-  const entry = `[${mode}] "${rawText.replace(/\s+/g,' ').trim().slice(0,48)}" → ${candidate||'null'} ${status}`;
-  _dbgLog.unshift(entry);
-  if (_dbgLog.length > 8) _dbgLog.pop();
-  const el = $('#dbgText');
-  if (el) el.textContent = _dbgLog.join('\n');
-  // Publish plaintext debug to MQTT so any subscriber can see it
-  if (state.client) {
-    try { state.client.publish(topicBase() + '/dbg', JSON.stringify({t:'dbg',mode,raw:rawText.trim().slice(0,60),id:candidate,ts:Date.now()}), {qos:0}); }
-    catch(e) {}
-  }
-}
-
-const _frameLog = [];
-
-function captureFrame(mode, frame, rawText, candidate) {
-  if (!dbgVisible || !frame) return;
-  _frameLog.unshift({ mode, dataUrl: frame.toDataURL('image/jpeg', 0.85),
-    w: frame.width, h: frame.height,
-    raw: (rawText || '').trim().replace(/\s+/g,' ').slice(0, 36),
-    id: candidate, ts: Date.now() });
-  if (_frameLog.length > 10) _frameLog.pop();
-}
-
-async function saveFrames() {
-  if (!_frameLog.length) { alert('No frames yet — enable debug (tap hint text) and scan first.'); return; }
-  const n = _frameLog.length;
-  const COLS = Math.min(3, n), ROWS = Math.ceil(n / COLS);
-  const FW = _frameLog[0].w, FH = _frameLog[0].h, LH = 16, PAD = 3;
-  const sheet = document.createElement('canvas');
-  sheet.width  = COLS * (FW + PAD);
-  sheet.height = ROWS * (FH + LH + PAD);
-  const ctx = sheet.getContext('2d');
-  ctx.fillStyle = '#111';
-  ctx.fillRect(0, 0, sheet.width, sheet.height);
-  ctx.font = '11px monospace';
-  await Promise.all(_frameLog.map((f, i) => new Promise(res => {
-    const img = new Image();
-    img.onload = () => {
-      const col = i % COLS, row = Math.floor(i / COLS);
-      const x = col * (FW + PAD), y = row * (FH + LH + PAD);
-      ctx.drawImage(img, x, y, FW, FH);
-      ctx.fillStyle = f.id ? '#a8ff78' : '#ff6b6b';
-      ctx.fillText(`[${f.mode}]${f.id ? ' '+f.id : ' null'} "${f.raw}"`, x + 2, y + FH + 13);
-      res();
-    };
-    img.onerror = res;
-    img.src = f.dataUrl;
-  })));
-  const sheetUrl = sheet.toDataURL('image/jpeg', 0.88);
-  try {
-    const blob = await (await fetch(sheetUrl)).blob();
-    const file = new File([blob], `idwedge_frames_${Date.now()}.jpg`, { type: 'image/jpeg' });
-    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'ANUSA Scanner debug frames' }); return; }
-  } catch(e) {}
-  window.open(sheetUrl); // fallback: open in tab → long-press to save
-}
-
-function drawDbgCanvas(frame, modeLabel) {
-  const dbg = $('#dbgCanvas');
-  dbg.width = frame.width; dbg.height = frame.height;
-  const dctx = dbg.getContext('2d');
-  dctx.drawImage(frame, 0, 0);
-  const W = frame.width, H = frame.height;
-  dctx.font = `bold ${Math.max(9, Math.round(W * 0.06))}px monospace`;
-  dctx.textBaseline = 'top';
-  for (let pct = 10; pct < 100; pct += 10) {
-    const x = W * pct / 100, y = H * pct / 100;
-    dctx.strokeStyle = pct === 50 ? 'rgba(255,122,26,0.8)' : 'rgba(255,122,26,0.35)';
-    dctx.lineWidth = pct === 50 ? 1.5 : 0.8;
-    dctx.beginPath(); dctx.moveTo(x,0); dctx.lineTo(x,H); dctx.stroke();
-    dctx.beginPath(); dctx.moveTo(0,y); dctx.lineTo(W,y); dctx.stroke();
-    dctx.fillStyle='rgba(0,0,0,0.6)'; dctx.fillText(pct+'%', x+2, 0);
-    dctx.fillStyle='rgba(255,122,26,1)'; dctx.fillText(pct+'%', x+2, 0);
-    dctx.fillStyle='rgba(0,0,0,0.6)'; dctx.fillText(pct+'%', 2, y+1);
-    dctx.fillStyle='rgba(255,122,26,1)'; dctx.fillText(pct+'%', 2, y+1);
-  }
-  const vid = $('video');
-  const label = `${vid.videoWidth}×${vid.videoHeight} [${modeLabel}] ${W}×${H}`;
-  dctx.font = `bold ${Math.max(10, Math.round(W*0.06))}px monospace`;
-  dctx.fillStyle = 'rgba(0,0,0,0.7)'; dctx.fillText(label, 3, H-Math.round(W*0.08)-1);
-  dctx.fillStyle = '#ff7a1a';         dctx.fillText(label, 2, H-Math.round(W*0.08));
-}
 
 // ── sharpness gate ──────────────────────────────────────────────
 // Handheld scanning produces lots of motion-blurred frames. OCR-ing a blurry frame
@@ -1148,16 +1052,6 @@ function wireUI() {
   $('#sheetBack').addEventListener('click', closeSheet);
   $('#saveBtn').addEventListener('click', onSave);
   $('#newRoom').addEventListener('click', () => { $('#setRoom').value = randomRoom(); });
-
-  $('#hint').addEventListener('click', () => {
-    dbgVisible = !dbgVisible;
-    $('#dbgCanvas').style.display = dbgVisible ? 'block' : 'none';
-    $('#dbgText').style.display = dbgVisible ? 'block' : 'none';
-    $('#saveFramesBtn').style.display = dbgVisible ? 'block' : 'none';
-    if (!dbgVisible) { const d = $('#dbgCanvas'); d.width = 0; $('#dbgText').textContent = ''; _frameLog.length = 0; }
-  });
-
-  $('#saveFramesBtn').addEventListener('click', saveFrames);
 }
 
 /* ────────────────────────── boot ────────────────────────────── */

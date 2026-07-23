@@ -100,29 +100,7 @@
     /* below reticle: 47% centre + half card height (portrait: ~54vw, max 214px) + gap */
     top:calc(47% + min(54vw,214px) + 14px);
     text-align:center;font-size:13px;font-weight:600;color:rgba(255,255,255,.92);letter-spacing:.06em;
-    text-shadow:0 1px 4px rgba(0,0,0,.6);cursor:pointer;min-height:20px;  /* min-height keeps it tappable (debug toggle) when empty */
-  }
-  #dbgCanvas{
-    position:absolute;bottom:10px;left:10px;
-    max-width:140px;border:1px solid rgba(255,122,26,.55);
-    border-radius:5px;background:#000;opacity:.9;
-    display:none;pointer-events:none;
-  }
-  #dbgText{
-    position:absolute;bottom:32px;left:158px;right:10px;
-    background:rgba(0,0,0,.82);color:#a8ff78;
-    font-family:monospace;font-size:10px;line-height:1.35;
-    white-space:pre-wrap;word-break:break-all;
-    padding:5px 7px;border-radius:5px;
-    border:1px solid rgba(168,255,120,.4);
-    display:none;pointer-events:none;z-index:5;
-  }
-  #saveFramesBtn{
-    position:absolute;bottom:10px;left:158px;
-    background:rgba(0,0,0,.82);color:#a8ff78;
-    font-family:monospace;font-size:11px;font-weight:bold;
-    border:1px solid rgba(168,255,120,.5);border-radius:5px;
-    padding:4px 10px;cursor:pointer;z-index:6;
+    text-shadow:0 1px 4px rgba(0,0,0,.6);pointer-events:none;
   }
   #pairManual{position:absolute;left:50%;bottom:26px;transform:translateX(-50%);
     background:rgba(16,20,24,.62);color:#fff;border:1px solid rgba(255,255,255,.32);
@@ -311,10 +289,7 @@
     <video id="video" playsinline muted autoplay></video>
 
     <div class="reticle" id="reticle"><i></i><i></i><i></i><i></i></div>
-    <div class="hint" id="hint"></div><!-- empty; still the invisible tap target for debug frames -->
-    <canvas id="dbgCanvas" title="OCR input preview — tap hint to toggle"></canvas>
-    <div id="dbgText"></div>
-    <button id="saveFramesBtn" style="display:none" title="Save last 10 OCR input frames">&#128190; Frames</button>
+    <div class="hint" id="hint"></div><!-- empty in normal scanning; the "Scanning for…" notice in Textbook mode -->
 
     <div class="cam-tools">
       <button id="torchBtn" style="display:none" aria-label="Torch">&#9889;</button>
@@ -379,7 +354,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.74</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.75</p>
 </div>
 
 <div class="toast" id="toast"></div>
