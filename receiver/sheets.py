@@ -138,27 +138,44 @@ def token_available():
         return False
 
 
+def _interactive_signin():
+    """Open the browser sign-in flow and cache the new token."""
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    cf = creds_file()
+    if not os.path.exists(cf):
+        raise FileNotFoundError(
+            "No credentials.json — add your OAuth Desktop client (see SHEETS_SETUP.md).")
+    flow = InstalledAppFlow.from_client_secrets_file(cf, SCOPES)
+    creds = flow.run_local_server(port=0)
+    _save(creds)
+    return creds
+
+
 def build_service(interactive=False):
     """Return a Sheets service. interactive=True may open a browser to sign in;
     interactive=False uses the cached token (refreshing if needed) or raises."""
     from google.auth.transport.requests import Request
-    from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
 
     creds = _load_cached()
     if creds and creds.valid:
         pass
     elif creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        _save(creds)
+        try:
+            creds.refresh(Request())
+            _save(creds)
+        except Exception:
+            # The refresh token itself is dead — almost always the 7-day expiry that Google
+            # applies to apps in "Testing" publishing status. Drop the stale token and either
+            # re-authenticate (interactive) or report signed-out — never get stuck retrying a
+            # dead token, which is what blocked the Sign in button.
+            sign_out()
+            if interactive:
+                creds = _interactive_signin()
+            else:
+                raise RuntimeError("not signed in")
     elif interactive:
-        cf = creds_file()
-        if not os.path.exists(cf):
-            raise FileNotFoundError(
-                "No credentials.json — add your OAuth Desktop client (see SHEETS_SETUP.md).")
-        flow = InstalledAppFlow.from_client_secrets_file(cf, SCOPES)
-        creds = flow.run_local_server(port=0)
-        _save(creds)
+        creds = _interactive_signin()
     else:
         raise RuntimeError("not signed in")
     return build("sheets", "v4", credentials=creds, cache_discovery=False)

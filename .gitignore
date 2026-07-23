@@ -20,6 +20,9 @@ receiver/icon_smallcheck.png
 scans.csv
 receiver/scans.csv
 
+# Demo data — kept local, not tracked
+demo_roster.csv
+
 # Google OAuth secrets — never commit
 receiver/credentials.json
 receiver/token.json

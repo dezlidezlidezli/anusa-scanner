@@ -85,8 +85,8 @@ Sheet mode needs a Google OAuth "Desktop app" client — see
 [`receiver/SHEETS_SETUP.md`](receiver/SHEETS_SETUP.md). Drop the `credentials.json` next to
 the app (or in `~/Library/Application Support/ANUSA Scanner/`), click **Sign in with
 Google**, paste your sheet's URL, and confirm the **UID / attendance / name** columns (the
-app guesses them). A demo roster you can import for testing without real student data:
-[`demo_roster.csv`](demo_roster.csv).
+app guesses them). For demos and screen-shares, import a roster of obviously-fake data
+(e.g. `u7878787` / John Smith / `TRUE`) rather than a real one, so no student data is exposed.
 
 ## How fast the result appears
 
