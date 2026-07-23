@@ -61,6 +61,9 @@
     background:rgba(255,255,255,.14);
   }
   .room-chip .lbl{color:rgba(255,255,255,.72);margin-right:6px;font-size:10px}
+  .mode-chip{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.1em;color:#fff;
+    background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.3);border-radius:6px;
+    padding:4px 9px;white-space:nowrap}
   .status{display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,.82);letter-spacing:.06em}
   .dot{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.5);flex:none}
   .dot.ok{background:#5ee29a} .dot.wait{background:#ffcf5e} .dot.err{background:#ff8a80}
@@ -96,8 +99,8 @@
     position:absolute;left:0;right:0;
     /* below reticle: 47% centre + half card height (portrait: ~54vw, max 214px) + gap */
     top:calc(47% + min(54vw,214px) + 14px);
-    text-align:center;font-size:12px;color:rgba(255,255,255,.9);letter-spacing:.08em;
-    text-shadow:0 1px 4px rgba(0,0,0,.6);cursor:pointer;
+    text-align:center;font-size:13px;font-weight:600;color:rgba(255,255,255,.92);letter-spacing:.06em;
+    text-shadow:0 1px 4px rgba(0,0,0,.6);cursor:pointer;min-height:20px;  /* min-height keeps it tappable (debug toggle) when empty */
   }
   #dbgCanvas{
     position:absolute;bottom:10px;left:10px;
@@ -178,7 +181,7 @@
     font-family:var(--mono);font-size:clamp(26px,9vw,40px);font-weight:600;letter-spacing:.08em;
     color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   }
-  .readout .num.empty{color:#cbc5b6}
+  .readout .num.empty{color:#cbc5b6;font-size:20px;letter-spacing:.28em}
   .readout .state{font-size:12px;color:var(--muted);font-family:var(--mono);white-space:nowrap}
   .readout .state.ok{color:var(--tick)}
   .readout .state.warn{color:var(--warn)}
@@ -297,9 +300,8 @@
     <button class="icon-btn" id="reloadBtn" aria-label="Force reload" title="Force reload (recover from a glitch)">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
     </button>
-    <div class="wordmark"><b>ANUSA&thinsp;SCANNER</b></div>
-    <div class="status"><span class="dot" id="dot"></span><span id="statusTxt">off</span></div>
-    <button class="room-chip" id="roomChip" aria-label="Room code"><span class="lbl">ROOM</span><span id="roomTxt">——</span></button>
+    <span class="mode-chip" id="modeChip" style="display:none"></span>
+    <div class="status" style="margin-left:auto"><span class="dot" id="dot"></span><span id="statusTxt">off</span></div>
     <button class="icon-btn" id="gearBtn" aria-label="Settings">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
     </button>
@@ -309,7 +311,7 @@
     <video id="video" playsinline muted autoplay></video>
 
     <div class="reticle" id="reticle"><i></i><i></i><i></i><i></i></div>
-    <div class="hint" id="hint">Align the student card in the frame</div>
+    <div class="hint" id="hint"></div><!-- empty; still the invisible tap target for debug frames -->
     <canvas id="dbgCanvas" title="OCR input preview — tap hint to toggle"></canvas>
     <div id="dbgText"></div>
     <button id="saveFramesBtn" style="display:none" title="Save last 10 OCR input frames">&#128190; Frames</button>
@@ -377,7 +379,7 @@
   </div>
   <button class="save" id="saveBtn">Save</button>
   <p class="note">Scans are AES-encrypted with a key derived from the room code before they touch the relay. Anyone with the room code can receive them — regenerate it per event.</p>
-  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.73</p>
+  <p class="note" style="margin-top:8px;text-align:right;opacity:.5">v14.74</p>
 </div>
 
 <div class="toast" id="toast"></div>

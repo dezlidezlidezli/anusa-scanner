@@ -631,6 +631,8 @@ function applyRxMode(mode) {
   } else if (mode !== 'textbook' && prev === 'textbook') {
     state.tbStage = null; _tbStudent = null; resetPaddleConfirm(); hideTbOverlay();
   }
+  updateHint();
+  updateModeChip();
 }
 function resetPaddleConfirm() { _pCandId = null; _pSentId = null; }
 
@@ -649,12 +651,14 @@ function onStudentScanned(studentId) {
   flashScan(); flashReticle(); unlockAudio(); chimeWarn();   // captured — one more to go
   state.tbStage = 'await'; resetPaddleConfirm();
   showTbOverlay('await', studentId, null);
+  updateHint();
 }
 function onTextbookScanned(code) {
   flashScan(); flashReticle(); unlockAudio(); chimeOk();     // complete
   state.tbStage = 'done'; resetPaddleConfirm();
   sendTextbookPair(_tbStudent, code);
   showTbOverlay('done', _tbStudent, code);
+  updateHint();
 }
 async function sendTextbookPair(student, code) {
   if (!state.client) return;
@@ -949,8 +953,31 @@ function stopScanning() {
 /* ────────────────────────── UI wiring ───────────────────────── */
 
 function refreshChrome() {
-  $('#roomTxt').textContent = state.settings.room;
-  $('#hint').textContent = 'Align the student card in the frame';
+  updateHint();
+  updateModeChip();
+}
+
+// The hint line under the reticle: empty in normal scanning; in Textbook Library mode it
+// says which code we're scanning for right now.
+function updateHint() {
+  const h = $('#hint'); if (!h) return;
+  let txt = '';
+  if (state.rxMode === 'textbook')
+    txt = (state.tbStage === 'textbook') ? 'Scanning for textbook' : 'Scanning for student card';
+  h.textContent = txt;
+}
+
+// Header chip showing the receiver's mode; and the deck's dot placeholder is hidden in
+// modes where it never fills in (Textbook Library uses its own overlay for feedback).
+function updateModeChip() {
+  const el = $('#modeChip');
+  if (el) {
+    const label = { keys: 'KEYSTROKE', sheet: 'PANTRY', textbook: 'TEXTBOOK' }[state.rxMode];
+    if (label) { el.textContent = label; el.style.display = ''; }
+    else { el.style.display = 'none'; }
+  }
+  const ro = document.querySelector('.readout');
+  if (ro) ro.style.visibility = (state.rxMode === 'textbook') ? 'hidden' : 'visible';
 }
 
 // Extract a room code from a scanned string — either a …/?room=XXXX URL or a bare code.
@@ -1109,6 +1136,7 @@ function wireUI() {
   $('#tbBtn').addEventListener('click', () => {
     if (state.tbStage === 'await') { state.tbStage = 'textbook'; resetPaddleConfirm(); hideTbOverlay(); }
     else if (state.tbStage === 'done') { state.tbStage = 'student'; _tbStudent = null; resetPaddleConfirm(); hideTbOverlay(); }
+    updateHint();
   });
   $('#pairManual').addEventListener('click', () => {
     const v = prompt('Enter the room code shown on the receiver:');
@@ -1117,7 +1145,6 @@ function wireUI() {
     if (room) finishPair(room);
   });
   $('#gearBtn').addEventListener('click', openSheet);
-  $('#roomChip').addEventListener('click', openSheet);
   $('#sheetBack').addEventListener('click', closeSheet);
   $('#saveBtn').addEventListener('click', onSave);
   $('#newRoom').addEventListener('click', () => { $('#setRoom').value = randomRoom(); });
