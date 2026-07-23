@@ -12,7 +12,7 @@ echo ""
 
 # ── 1. Install build deps ─────────────────────────────────────────────────────
 echo "→ Installing dependencies…"
-pip install --quiet paho-mqtt cryptography pynput pyinstaller pillow qrcode pywebview \
+python3 -m pip install --quiet paho-mqtt cryptography pynput pyinstaller pillow qrcode pywebview \
     google-api-python-client google-auth-oauthlib google-auth-httplib2
 
 # ── 2. App icon ───────────────────────────────────────────────────────────────
@@ -67,15 +67,22 @@ echo "→ Clearing attributes + ad-hoc signing…"
 xattr -cr "dist/${APP_NAME}.app" 2>/dev/null || true
 codesign --force --deep --sign - "dist/${APP_NAME}.app" 2>/dev/null || true
 
+# Ship the first-run installer next to the app so recipients don't have to right-click → Open.
+if [ -f Install.command ]; then
+    cp Install.command "dist/Install.command"
+    chmod +x "dist/Install.command"
+    echo "→ Added dist/Install.command (clears quarantine on the recipient's Mac)"
+fi
+
 # ── 5. Done ───────────────────────────────────────────────────────────────────
 echo ""
 echo "✓  dist/${APP_NAME}.app is ready"
 echo ""
-echo "To distribute: zip the .app and share it."
+echo "To distribute: zip BOTH  dist/${APP_NAME}.app  and  dist/Install.command  together."
 echo ""
-echo "⚠  Recipients need to do this once on first launch:"
-echo "   1. Right-click the app → Open  (bypasses the 'unidentified developer' block)"
-echo "      or: System Settings → Privacy & Security → Open Anyway"
-echo "   2. System Settings → Privacy & Security → Accessibility"
-echo "      → enable '${APP_NAME}'  (required so it can type into other apps)"
+echo "⚠  Recipients: double-click  Install.command  once (right-click → Open if macOS blocks"
+echo "   it). It clears the quarantine flag, installs to /Applications, and launches — after"
+echo "   that the app opens with a normal double-click, no prompts."
+echo "   Keystroke mode also needs: System Settings → Privacy & Security → Accessibility →"
+echo "   enable '${APP_NAME}'. (Union Pantry + Textbook Library don't need it.)"
 echo ""
