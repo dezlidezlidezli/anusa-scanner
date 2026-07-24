@@ -587,8 +587,8 @@ class SheetSession:
                 self._set_cell(r, ci, val)
                 data.append({"range": f"'{self.tab}'!{col_letter(ci)}{row}", "values": [[val]]})
 
-            put(self.tb_retby_i, initials)
-            put(self.tb_realret_i, f"{date} {initials}")
+            put(self.tb_retby_i, initials)     # Return received by (initials)
+            put(self.tb_realret_i, date)       # Real Return date (DD/MM/YYYY) — date only
             put(self.tb_status_i, "Returned")
             if data:
                 self.svc.spreadsheets().values().batchUpdate(
