@@ -243,7 +243,7 @@
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="settingsBtn" title="Settings">⚙ Settings<span class="badge" id="settingsBadge"></span></button>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver" style="display:none">v14.86</div>
+    <div class="ver" id="ver" style="display:none">v14.87</div>
   </header>
 
   <main>
@@ -362,8 +362,8 @@
 
 <div class="modal-back" id="pantryBack">
   <div class="modal pantry-modal">
-    <h2>Union&nbsp;Pantry check-in</h2>
-    <p>Paste the roster sheet, then choose the columns to check students in.</p>
+    <h2 id="pantryTitle">Union&nbsp;Pantry check-in</h2>
+    <p id="pantryDesc">Paste the roster sheet, then choose the columns to check students in.</p>
     <div class="row" id="pantryAuthRow" style="justify-content:space-between;margin-bottom:12px;gap:8px">
       <span class="chip" id="pantryAuthChip"><span class="dot"></span><span id="pantryAuthStat">checking…</span></span>
       <button class="btn ghost" id="pantryAuthSetup" style="padding:6px 12px;font-size:12px;display:none">⚙ Set up in Settings</button>
@@ -396,10 +396,17 @@
       <select class="input" id="tabSelect"></select>
     </div>
     <div class="divider" id="tabDivider" style="display:none"></div>
-    <div class="cols" style="margin-top:14px">
+    <div class="cols" id="pantryColsWrap" style="margin-top:14px">
       <label>ID column</label><select class="input" id="colId"></select>
       <label>Tick column</label><select class="input" id="colTick"></select>
       <label>Name column</label><select class="input" id="colName"></select>
+    </div>
+    <div class="cols" id="tbColsWrap" style="display:none;margin-top:14px">
+      <label>Status</label><select class="input" id="tbStatus"></select>
+      <label>Date of hire</label><select class="input" id="tbDate"></select>
+      <label>Hired out by (init.)</label><select class="input" id="tbInit"></select>
+      <label>UID</label><select class="input" id="tbUid"></select>
+      <label>Assigned codes</label><select class="input" id="tbCode"></select>
     </div>
     <div class="row" style="margin-top:14px;justify-content:space-between">
       <span class="chip" id="sheetChip"><span class="dot"></span><span id="sheetStat">sign in, then load a sheet</span></span>
@@ -502,7 +509,7 @@ const ui = {
   setMode(m){
     this.mode = m;
     document.querySelectorAll('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode===m));
-    $('#pantrySummary').style.display = m==='sheet' ? 'block' : 'none';
+    $('#pantrySummary').style.display = (m==='sheet'||m==='textbook') ? 'block' : 'none';  // both use a sheet
     if(m!=='sheet'){ const a=$('#attend'); if(a) a.style.display='none'; }   // attendance is sheet-only
     const hh = document.querySelector('.history .head h3');
     if(hh) hh.textContent = m==='textbook' ? 'Borrowed textbooks' : 'Recent scans';
@@ -571,6 +578,25 @@ const ui = {
     if(!this.headers.length) return;
     api().set_columns($('#colId').value, $('#colTick').value, $('#colName').value);  // values are indices
   },
+  fillTbCols(headers, guess){   // Textbook borrow-log: Status / Date / Initials / UID / Codes
+    this.headers = headers;
+    const colLetter = (i) => { let s='', n=i+1; while(n){ n--; s=String.fromCharCode(65+n%26)+s; n=(n/26)|0; } return s; };
+    const counts = {};
+    headers.forEach(h => { const k=String(h==null?'':h).trim().toLowerCase(); counts[k]=(counts[k]||0)+1; });
+    const label = (h,i) => { const txt=(h==null||String(h).trim()==='')?'(blank col '+colLetter(i)+')':String(h);
+      return counts[String(h==null?'':h).trim().toLowerCase()]>1 ? `${txt}  ·  col ${colLetter(i)}` : txt; };
+    const fill = (sel, gi) => { const s=$(sel); s.innerHTML='';
+      headers.forEach((h,i)=>{ const e=document.createElement('option'); e.value=String(i); e.textContent=label(h,i); s.appendChild(e); });
+      s.value = (gi==null||gi<0) ? '0' : String(gi); };
+    fill('#tbStatus', guess[0]); fill('#tbDate', guess[1]); fill('#tbInit', guess[2]);
+    fill('#tbUid', guess[3]); fill('#tbCode', guess[4]);
+    this.applyTbCols();
+  },
+  applyTbCols(){
+    if(!this.headers.length) return;
+    api().set_textbook_columns($('#tbStatus').value, $('#tbDate').value, $('#tbInit').value,
+                               $('#tbUid').value, $('#tbCode').value);
+  },
   setAuth(p){
     this.auth = {mode:p.mode||'service_account', ready:!!p.ready,
                  saPresent:!!p.sa_present, saEmail:p.sa_email||''};
@@ -616,9 +642,10 @@ const ui = {
     // Continue / show_pairing so a late event can't pop it back over a running session.
     if(!both && !this._setupPassed){ const g=$('#setupGate'); if(g) g.classList.remove('hidden'); }
   },
-  setRecent(mode, list){ this.recent[mode] = list||[]; if(mode==='sheet') this.renderRecent(); },
+  _recentKey(){ return this.mode==='textbook' ? 'textbook' : 'sheet'; },
+  setRecent(mode, list){ this.recent[mode] = list||[]; if(mode===this._recentKey()) this.renderRecent(); },
   renderRecent(){
-    const list = this.recent.sheet || [], wrap = $('#recentWrap'), sel = $('#recentSheets');
+    const list = this.recent[this._recentKey()] || [], wrap = $('#recentWrap'), sel = $('#recentSheets');
     if(!wrap || !sel) return;
     if(!list.length){ wrap.style.display='none'; $('#urlWrap').style.display='block'; return; }
     wrap.style.display='block';
@@ -687,7 +714,8 @@ window.uiEvent = (type, p={}) => {
   else if(type==='sa_email'){ $('#saEmailTxt').textContent=p.email||''; }
   else if(type==='user_info'){ $('#userInitials').value = p.initials||''; ui.setInitials(p.initials); }
   else if(type==='setup_required'){ ui._setupPassed=false; ui.renderSetupGate(); }
-  else if(type==='sheet_loaded'){ ui.hideShareNeeded(); ui.setTabs(p.tabs, p.tab); ui.fillCols(p.headers, p.guess); }
+  else if(type==='sheet_loaded'){ ui.hideShareNeeded(); ui.setTabs(p.tabs, p.tab);
+    if(p.mode==='textbook') ui.fillTbCols(p.headers, p.guess); else ui.fillCols(p.headers, p.guess); }
   else if(type==='recent_sheets'){ ui.setRecent(p.mode, p.list); }
   else if(type==='sa_share_needed'){ ui.showShareNeeded(p.email); }
   else if(type==='sheet_status'){ ui.setSheetStat(p.text, p.kind); ui.sheetReady = p.kind==='ok'; }
@@ -719,9 +747,19 @@ $('#qrClose').onclick = () => $('#qrBack').classList.remove('show');
 $('#qrBack').onclick = e => { if(e.target.id==='qrBack') $('#qrBack').classList.remove('show'); };
 document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => {
   ui.setMode(b.dataset.mode); api().set_mode(b.dataset.mode);
-  if(b.dataset.mode==='sheet') openPantry();     // Union Pantry → open the setup pop-up
+  if(b.dataset.mode==='sheet' || b.dataset.mode==='textbook') openPantry();   // both → open sheet setup
 });
-function openPantry(){ $('#pantryBack').classList.add('show'); }
+function applyModalMode(){   // the setup modal serves both Union Pantry and Textbook Library
+  const tb = ui.mode==='textbook';
+  $('#pantryTitle').innerHTML = tb ? 'Textbook&nbsp;Library — borrow log' : 'Union&nbsp;Pantry check-in';
+  $('#pantryDesc').textContent = tb
+    ? 'Load the borrow-log sheet, then map the columns filled on each scan.'
+    : 'Paste the roster sheet, then choose the columns to check students in.';
+  $('#pantryColsWrap').style.display = tb ? 'none' : 'grid';
+  $('#tbColsWrap').style.display = tb ? 'grid' : 'none';
+  $('#sheetUrl').placeholder = tb ? 'paste the borrow-log sheet link' : 'paste the roster sheet link';
+}
+function openPantry(){ applyModalMode(); ui.renderRecent(); $('#pantryBack').classList.add('show'); }
 function closePantry(){ $('#pantryBack').classList.remove('show'); }
 $('#pantryEdit').onclick = openPantry;
 $('#pantryReload').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
@@ -784,6 +822,7 @@ $('#saShareCopy').onclick = () => copyText($('#saShareEmail').textContent, $('#s
 $('#saEmailCopy').onclick = () => copyText($('#saEmailTxt').textContent, $('#saEmailCopy'));
 $('#syncBtn').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
 ['#colId','#colTick','#colName'].forEach(s => $(s).onchange = () => ui.applyCols());
+['#tbStatus','#tbDate','#tbInit','#tbUid','#tbCode'].forEach(s => $(s).onchange = () => ui.applyTbCols());
 $('#manualBtn').onclick = submitManual;
 $('#manualIn').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 7); renderSuggest(); });
 $('#manualIn').addEventListener('keydown', onManualKey);
@@ -863,6 +902,7 @@ const MOCK = {
   connect:(r)=>window.uiEvent('status',{kind:'ok',room:r}),
   disconnect:()=>window.uiEvent('status',{kind:'off'}),
   set_mode:()=>{}, set_columns:()=>{ mockSheetData(); window.uiEvent('sheet_status',{text:'ready',kind:'ok'}); },
+  set_textbook_columns:()=>window.uiEvent('sheet_status',{text:'ready',kind:'ok'}),
   sync:()=>setTimeout(()=>{ui.setSheetStat('re-synced · 137 rows','ok');mockSheetData();},400),
   _saEmail:'anusa-scanner@my-proj.iam.gserviceaccount.com',
   set_auth_mode:(m)=>setTimeout(()=>{
@@ -879,7 +919,12 @@ const MOCK = {
   set_user_initials:()=>{}, finish_setup:async()=>({ok:true}),
   accessibility_status:()=>setTimeout(()=>window.uiEvent('accessibility',{mac:true,trusted:false}),150),
   open_accessibility_settings:()=>{},
-  _recent:[], _tabs:['Monday','Tuesday','Wednesday','Thursday','Friday'], _curTab:'Monday',
+  _recent:{sheet:[],textbook:[]}, _tabs:['Monday','Tuesday','Wednesday','Thursday','Friday'], _curTab:'Monday',
+  _tbHeaders:['','','Status','Date of Hire','Hired out by (initials)','Return received by','Real Return','Email','UID','Assigned Codes'],
+  _emitSheet:(tab)=>{ const tb=ui.mode==='textbook';
+    window.uiEvent('sheet_loaded',{mode:ui.mode,tab:tab,tabs:MOCK._tabs,rows:137,
+      headers: tb?MOCK._tbHeaders:['Email Address','Full Name:','UID:','Career','Attendence'],
+      guess: tb?[2,3,4,8,9]:[2,4,1]}); },
   load_sheet:(u, tab)=>setTimeout(()=>{
     if(String(u).includes('denied')){   // preview the "not shared" flow
       window.uiEvent('sa_share_needed',{email:MOCK._saEmail});
@@ -887,15 +932,14 @@ const MOCK = {
       return;
     }
     MOCK._curTab = tab || MOCK._curTab;
-    MOCK._recent = [{id:'demo',title:'ANUSA Union Pantry Registration',url:u||'https://docs.google.com/spreadsheets/d/DEMO',used:'2026-07-24',tab:MOCK._curTab,cols:{}},
-                    ...MOCK._recent.filter(r=>r.url!==u)].slice(0,8);
-    window.uiEvent('recent_sheets',{mode:'sheet',list:MOCK._recent});
-    window.uiEvent('sheet_loaded',{tab:MOCK._curTab,tabs:MOCK._tabs,rows:137,
-      headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:[2,4,1]});
+    const key = ui.mode==='textbook'?'textbook':'sheet';
+    const title = key==='textbook'?'ANUSA Textbook Hire 2026':'ANUSA Union Pantry Registration';
+    MOCK._recent[key] = [{id:'demo',title:title,url:u||'https://docs.google.com/spreadsheets/d/DEMO',used:'2026-07-24',tab:MOCK._curTab,cols:{}},
+                    ...MOCK._recent[key].filter(r=>r.url!==u)].slice(0,8);
+    window.uiEvent('recent_sheets',{mode:key,list:MOCK._recent[key]});
+    MOCK._emitSheet(MOCK._curTab);
   },500),
-  select_tab:(tab)=>setTimeout(()=>{ MOCK._curTab=tab;
-    window.uiEvent('sheet_loaded',{tab:tab,tabs:MOCK._tabs,rows:137,
-      headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:[2,4,1]}); },300),
+  select_tab:(tab)=>setTimeout(()=>{ MOCK._curTab=tab; MOCK._emitSheet(tab); },300),
   manual:(v)=>{
     window.uiEvent('working',{id:v});
     const exact = MOCK_ROSTER.find(r=>r.id===v);

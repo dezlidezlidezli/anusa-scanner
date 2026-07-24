@@ -389,6 +389,8 @@ class SheetSession:
         self.values = []
         self.header_i = 0     # which row of self.values holds the column names (auto-detected)
         self.id_i = self.tick_i = self.name_i = None
+        # Textbook Library borrow-log columns (a different sheet shape — see append_borrow)
+        self.tb_status_i = self.tb_date_i = self.tb_init_i = self.tb_uid_i = self.tb_code_i = None
 
     def open(self, url, tab=None):
         """Load a spreadsheet tab. Returns {title, tab, tabs, headers, rows}."""
@@ -463,6 +465,81 @@ class SheetSession:
             if 0 <= i < len(self.headers):
                 return i
         return resolve_col(self.headers, s)    # header name / letter / 'today'
+
+    # ── Textbook Library: a borrow-log sheet you APPEND rows to ───────────────
+    def _col_texts(self):
+        """Per column, the header cell + the banner row above it (rows 1 & 2), lowercased — so
+        fuzzy matching can use BOTH rows (these sheets often describe a column across two rows)."""
+        hi = self.header_i
+        banner = self.values[hi - 1] if hi >= 1 else []
+        hdr = self.values[hi] if hi < len(self.values) else []
+        n = max(len(banner), len(hdr))
+        out = []
+        for i in range(n):
+            b = str(banner[i]).strip().lower() if i < len(banner) else ""
+            h = str(hdr[i]).strip().lower() if i < len(hdr) else ""
+            out.append((b + " " + h).strip())
+        return out
+
+    def guess_textbook_columns(self):
+        """Best-guess column INDICES for the borrow log: [status, date, init, uid, code]. Fuzzy —
+        matches across the header row and the banner row above it."""
+        texts = self._col_texts()
+
+        def find(pats):
+            for i, t in enumerate(texts):
+                if any(p in t for p in pats):
+                    return i
+            return None
+
+        status = find(["status"])
+        date_i = find(["date of hire", "date student collected", "date of collection", "hire date"])
+        init_i = find(["hired out by", "operated the scanner", "lent by", "issued by", "initials"])
+        uid_i = find(["uid", "student number", "student id"])
+        code_i = find(["assigned code", "asset code", "assigned title", "title code", "code"])
+        return [status, date_i, init_i, uid_i, code_i]
+
+    def set_textbook_columns(self, status, date, init, uid, code):
+        self.tb_status_i = self._to_index(status)
+        self.tb_date_i = self._to_index(date)
+        self.tb_init_i = self._to_index(init)
+        self.tb_uid_i = self._to_index(uid)
+        self.tb_code_i = self._to_index(code)
+
+    def append_borrow(self, uid, code, initials, date):
+        """Append a borrow row: writes On Hire / date / initials / uXXXXXXX / code into the first
+        empty data row (or a new row at the end). Returns the 1-based row written."""
+        with self._lock:
+            if self.tb_uid_i is None or self.tb_status_i is None:
+                raise RuntimeError("textbook columns not set")
+            target = None
+            for r in range(self.header_i + 1, len(self.values)):
+                u = normalize(self._cell(r, self.tb_uid_i))
+                s = str(self._cell(r, self.tb_status_i)).strip()
+                if not u and not s:
+                    target = r
+                    break
+            if target is None:
+                target = len(self.values)
+                self.values.append([])
+            data = []
+
+            def put(ci, val):
+                if ci is None:
+                    return
+                self._set_cell(target, ci, val)
+                data.append({"range": f"'{self.tab}'!{col_letter(ci)}{target + 1}",
+                             "values": [[val]]})
+
+            put(self.tb_status_i, "On Hire")
+            put(self.tb_date_i, date)                 # DD/MM/YYYY
+            put(self.tb_init_i, initials)             # e.g. MK
+            put(self.tb_uid_i, "u" + normalize(uid))  # uXXXXXXX
+            put(self.tb_code_i, code)                 # e.g. PAL/001
+            self.svc.spreadsheets().values().batchUpdate(
+                spreadsheetId=self.sid,
+                body={"valueInputOption": "USER_ENTERED", "data": data}).execute()
+            return target + 1
 
     def plan_checkin(self, student):
         """Decide the check-in outcome from the loaded sheet WITHOUT the (slow) API write, so
@@ -627,10 +704,15 @@ class SheetSession:
 
     @staticmethod
     def _looks_like_header(cells):
+        # Match the id signal on a real HEADER cell, not the word "student" buried in a banner
+        # sentence (e.g. "Date student collected" must NOT read as an id column).
         low = [str(c).strip().lower() for c in (cells or [])]
-        has_id = any("uid" in c or "student" in c or "number" in c or c in ("id", "sid")
-                     for c in low)
-        has_name = any("name" in c for c in low)
+        has_id = any(
+            "uid" in c or c.startswith("student") or "student number" in c or "student id" in c
+            or c in ("id", "sid", "number", "student no", "student number", "student id")
+            for c in low)
+        has_name = any(c == "name" or c.startswith("name") or c.endswith("name")
+                       or "full name" in c or "student name" in c for c in low)
         return has_id or has_name
 
     def _find_all(self, target):

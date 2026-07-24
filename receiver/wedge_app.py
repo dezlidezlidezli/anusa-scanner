@@ -52,7 +52,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.86"   # shared version across the Mac app + web app
+VERSION        = "14.87"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -495,9 +495,22 @@ class Api:
         if not sheets.get_user_initials():
             return   # initials mandatory — don't log an untraceable pairing
         who = sheets.get_user_initials()
+        # If a Textbook borrow-log sheet is set up, append the row (Status/Date/Initials/UID/Code).
+        row_status = None
+        if self.mode == "textbook" and self.sheet and self.sheet_ready and self.sheet.tb_uid_i is not None:
+            try:
+                self.sheet.append_borrow(student, code, who, datetime.now().strftime("%d/%m/%Y"))
+                row_status = "on-hire"
+            except Exception as e:
+                row_status = "error"
+                if self._sa_permission(e):
+                    self._emit("sheet_status",
+                               {"text": "sheet not shared with the service account", "kind": "bad"})
+                else:
+                    self._emit("sheet_status", {"text": f"sheet write failed: {str(e)[:34]}", "kind": "bad"})
         self._tblog.insert(0, {"ts": ts, "student": student, "code": code, "who": who})
         self._log_pair_csv(ts, student, code, who)
-        self._emit("tbpair", {"student": student, "code": code, "ts": ts})
+        self._emit("tbpair", {"student": student, "code": code, "ts": ts, "status": row_status})
 
     def _log_pair_csv(self, ts, student, code, who=""):
         try:
@@ -590,7 +603,10 @@ class Api:
         self.focused = bool(f)
 
     def set_mode(self, m):
-        self.mode = m if m in ("keys", "sheet", "textbook") else "keys"
+        m = m if m in ("keys", "sheet", "textbook") else "keys"
+        if m != self.mode:
+            self.sheet_ready = False   # column mapping is mode-specific; re-set up for the new mode
+        self.mode = m
         self.bridge.send_mode(self.mode)   # tell the phones which scan flow to run
         # Sheet mode → give phones the roster for instant results; other modes → clear it so a
         # stale roster can't make phones show sheet-style results.
@@ -707,8 +723,11 @@ class Api:
             self.remember_sheet(url, info.get("title", ""), cur_tab)   # recently-used (per mode)
             # Reuse the columns previously chosen for THIS sheet+tab instead of re-guessing.
             cached = sheets.recent_sheet_cols(self.mode, sid, cur_tab)
-            guess = cached if cached else list(self.sheet.guess_columns())
-            self._emit("sheet_loaded", {"tab": cur_tab, "tabs": info.get("tabs", []),
+            if self.mode == "textbook":
+                guess = cached if cached else list(self.sheet.guess_textbook_columns())
+            else:
+                guess = cached if cached else list(self.sheet.guess_columns())
+            self._emit("sheet_loaded", {"mode": self.mode, "tab": cur_tab, "tabs": info.get("tabs", []),
                                        "rows": info["rows"], "headers": info["headers"],
                                        "guess": guess, "cached": bool(cached)})
         except Exception as e:
@@ -733,6 +752,24 @@ class Api:
                                            [self.sheet.id_i, self.sheet.tick_i, self.sheet.name_i])
             self._emit("sheet_status", {"text": "ready", "kind": "ok"})
             self._push_sheet_data()   # roster (for autofill) + attendance %
+        except Exception as e:
+            self.sheet_ready = False
+            self._emit("sheet_status", {"text": f"column error: {e}", "kind": "bad"})
+
+    def set_textbook_columns(self, status, date, init, uid, code):
+        """Textbook Library: map the borrow-log columns (Status / Date of Hire / Initials / UID /
+        Assigned Codes). Cached per sheet+tab in the (separate) textbook recent store."""
+        if not self.sheet or not self.sheet.headers:
+            return
+        try:
+            self.sheet.set_textbook_columns(status, date, init, uid, code)
+            self.sheet_ready = True
+            if self.sheet.sid and self.sheet.tab is not None:
+                sheets.remember_sheet_cols(self.mode, self.sheet.sid, self.sheet.tab,
+                                           [self.sheet.tb_status_i, self.sheet.tb_date_i,
+                                            self.sheet.tb_init_i, self.sheet.tb_uid_i,
+                                            self.sheet.tb_code_i])
+            self._emit("sheet_status", {"text": "ready", "kind": "ok"})
         except Exception as e:
             self.sheet_ready = False
             self._emit("sheet_status", {"text": f"column error: {e}", "kind": "bad"})
@@ -834,9 +871,18 @@ def main():
 
     api = Api()
     html = open(_resource("ui.html"), encoding="utf-8").read()
+    # Open at the full usable height of the screen (a bit wider too), so nothing is cramped.
+    win_w, win_h = 1100, 900
+    try:
+        from AppKit import NSScreen
+        vf = NSScreen.mainScreen().visibleFrame()   # excludes the menu bar + Dock
+        win_w = min(1160, int(vf.size.width))
+        win_h = int(vf.size.height)
+    except Exception:
+        pass
     window = webview.create_window(
         "ANUSA Scanner", html=html, js_api=api,
-        width=940, height=720, min_size=(820, 600), background_color="#faf6ec")
+        width=win_w, height=win_h, min_size=(820, 600), background_color="#faf6ec")
     webview.start(api.attach, window)
 
 
