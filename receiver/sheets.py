@@ -110,9 +110,17 @@ def _read_prefs():
 
 
 def _write_prefs(d):
+    # Atomic write: serialise to a temp file, fsync, then os.replace() over the real file.
+    # A crash or kill mid-write can't leave a truncated prefs.json that would read back empty
+    # and silently wipe the operator's settings — the old file stays intact until the rename.
     try:
-        with open(prefs_file(), "w") as f:
-            json.dump(d, f)
+        p = prefs_file()
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(d, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
     except Exception:
         pass
 
@@ -128,6 +136,26 @@ def set_auth_mode(mode):
     d["auth_mode"] = mode
     _write_prefs(d)
     return mode
+
+
+def recent_sheets(mode):
+    """Recently-used spreadsheets for a mode: [{id, title, url, used}], newest first."""
+    return (_read_prefs().get("recent_sheets") or {}).get(mode) or []
+
+
+def remember_recent_sheet(mode, sid, title, url):
+    """Record (or bump to the top) a spreadsheet in a mode's recently-used list, keyed by the
+    spreadsheet id, labelled by its title, stamped with today's date. Capped at 8."""
+    if not sid:
+        return
+    d = _read_prefs()
+    rec = d.get("recent_sheets") or {}
+    lst = [x for x in (rec.get(mode) or []) if x.get("id") != sid]
+    lst.insert(0, {"id": sid, "title": (title or "").strip() or "(untitled sheet)",
+                   "url": url, "used": datetime.date.today().strftime("%Y-%m-%d")})
+    rec[mode] = lst[:8]
+    d["recent_sheets"] = rec
+    _write_prefs(d)
 
 
 def get_user_initials():

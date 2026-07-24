@@ -52,7 +52,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.79"   # shared version across the Mac app + web app
+VERSION        = "14.80"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -332,6 +332,23 @@ class Api:
                               "id": sid, "name": "", "ts": ts})
         self.bridge.ack(data.get("seq"), data.get("dev"))
 
+    @staticmethod
+    def _is_permission_error(e):
+        """A Google 'no access' error — in service-account mode this almost always means the
+        sheet hasn't been shared with the service account's email."""
+        status = getattr(getattr(e, "resp", None), "status", None)
+        if status == 403:
+            return True
+        s = str(e).lower()
+        return "permission" in s or "does not have permission" in s or "permission_denied" in s
+
+    def _sa_permission(self, e):
+        """True + surface the 'share the sheet' prompt when a service-account op is blocked."""
+        if self._is_permission_error(e) and sheets.get_auth_mode() == "service_account":
+            self._emit("sa_share_needed", {"email": sheets.service_account_email() or ""})
+            return True
+        return False
+
     def _do_checkin(self, data, sid, ts):
         # Optimistic: decide the outcome from the loaded sheet (fast) and show it NOW, then
         # write the tick to Google Sheets in the background — the slow API write no longer
@@ -345,9 +362,11 @@ class Api:
         if plan.get("status") == "checked-in":
             try:
                 self.sheet.commit_checkin(plan)
-            except Exception:
+            except Exception as e:
+                msg = ("share the sheet as Editor with the service account"
+                       if self._sa_permission(e) else "sheet write failed — rescan")
                 self.q.put(("checkin", data, sid, ts,
-                            {"status": "error", "name": "sheet write failed — rescan", "id": sid}))
+                            {"status": "error", "name": msg, "id": sid}))
 
     def _checkin_result(self, data, sid, ts, res):
         status = res.get("status", "error")
@@ -479,10 +498,24 @@ class Api:
         self._emit("mode", {"mode": self.mode})   # UI adopts the backend's real mode
         self._emit_auth()
         self._emit("user_info", {"initials": sheets.get_user_initials()})
+        self.push_recent_sheets()
         return {"version": VERSION, "mode": self.mode}
 
     def set_user_initials(self, v):
         return sheets.set_user_initials(v)
+
+    def remember_sheet(self, url, title):
+        """Add the just-loaded sheet to the current mode's recently-used list and push it."""
+        try:
+            sheets.remember_recent_sheet(self.mode, sheets.spreadsheet_id(url), title, url)
+            self._emit("recent_sheets",
+                       {"mode": self.mode, "list": sheets.recent_sheets(self.mode)})
+        except Exception:
+            pass
+
+    def push_recent_sheets(self):
+        for m in ("sheet", "textbook"):
+            self._emit("recent_sheets", {"mode": m, "list": sheets.recent_sheets(m)})
 
     def set_focus(self, f):
         self.focused = bool(f)
@@ -590,10 +623,17 @@ class Api:
         try:
             info = self.sheet.open(url)
             guess = self.sheet.guess_columns()
+            self.remember_sheet(url, info.get("title", ""))   # recently-used list (per mode)
             self._emit("sheet_loaded", {"tab": info["tab"], "rows": info["rows"],
                                        "headers": info["headers"], "guess": list(guess)})
         except Exception as e:
-            self._emit("sheet_status", {"text": f"load failed: {str(e)[:44]}", "kind": "bad"})
+            if self._sa_permission(e):
+                # Not shared with the service account — block set-up; the UI shows the email.
+                self.sheet_ready = False
+                self._emit("sheet_status",
+                           {"text": "sheet not shared with the service account", "kind": "bad"})
+            else:
+                self._emit("sheet_status", {"text": f"load failed: {str(e)[:44]}", "kind": "bad"})
 
     def set_columns(self, id_col, tick_col, name_col):
         if not self.sheet or not self.sheet.headers:
