@@ -329,12 +329,26 @@ function setReadout(id, stateTxt, cls) {
   const st = $('#numState');
   st.textContent = stateTxt || '';
   st.className = 'state ' + (cls || '');
+  fitReadout();
 }
 
-function toast(msg) {
+// Shrink the student-number text to fit its box instead of ellipsis-truncating it — a long id
+// (or a long status beside it) would otherwise clip to "u82215…".
+function fitReadout() {
+  const n = $('#numOut');
+  n.style.fontSize = '';                       // reset to the CSS clamp size
+  if (n.classList.contains('empty')) return;
+  let size = parseFloat(getComputedStyle(n).fontSize) || 40, guard = 0;
+  while (n.scrollWidth > n.clientWidth + 1 && size > 15 && guard++ < 40) {
+    size -= 1.5; n.style.fontSize = size + 'px';
+  }
+}
+
+let _volumeAdvised = false;   // one-time "turn your volume up" reminder per app load
+function toast(msg, ms) {
   const t = $('#toast');
   t.textContent = msg; t.style.display = 'block';
-  clearTimeout(t._h); t._h = setTimeout(() => { t.style.display = 'none'; }, 1800);
+  clearTimeout(t._h); t._h = setTimeout(() => { t.style.display = 'none'; }, ms || 1800);
 }
 
 // A short silent WAV, generated once — played on a loop through an <audio> element to hold the
@@ -374,6 +388,7 @@ function primeMediaChannel() {
 
 function unlockAudio() {
   primeMediaChannel();
+  unlockChimes();          // silently unlock the <audio> chime elements on this gesture
   if (state.audio) {
     if (state.audio.state === 'suspended') state.audio.resume().catch(() => {});   // e.g. after resume
     return;
@@ -386,31 +401,116 @@ function unlockAudio() {
   } catch (e) {}
 }
 
-// Play a short sequence of notes. (No sub-bass thump — removed.)
-function tone(notes, type = 'triangle', gain = 0.2, dur = 0.19) {
-  if (!state.audio) return;
+// The chime definitions (note sequences). Rendered once to WAV clips and played through
+// <audio> MEDIA elements — the only path iOS lets through when the phone is on silent.
+const CHIME_DEFS = {
+  ok:   { notes: [[784, 0], [1175, 0.085]], type: 'triangle', gain: 0.5,  dur: 0.19 },  // bright ascending
+  warn: { notes: [[588, 0], [588, 0.13]],   type: 'triangle', gain: 0.45, dur: 0.15 },  // two flat mid notes
+  fail: { notes: [[247, 0], [165, 0.14]],   type: 'sawtooth', gain: 0.4,  dur: 0.26 },  // low descending buzz
+};
+let _chimeUrls = null, _chimeEls = null, _chimeRendering = false, _pendingUnlock = false;
+
+// Encode a mono AudioBuffer to a 16-bit PCM WAV data: URI.
+function bufferToWavUri(buf) {
+  const ch = buf.getChannelData(0), n = ch.length, sr = buf.sampleRate;
+  const ab = new ArrayBuffer(44 + n * 2), dv = new DataView(ab);
+  const wr = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  wr(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); wr(8, 'WAVE'); wr(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  wr(36, 'data'); dv.setUint32(40, n * 2, true);
+  let o = 44; for (let i = 0; i < n; i++) { const s = Math.max(-1, Math.min(1, ch[i])); dv.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true); o += 2; }
+  const u8 = new Uint8Array(ab); let bin = ''; for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+  return 'data:audio/wav;base64,' + btoa(bin);
+}
+
+// Synthesise a chime offline (no user gesture needed) → WAV data URI.
+function renderChimeWav(def) {
+  return new Promise((resolve, reject) => {
+    try {
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      if (!OAC) { reject(new Error('no OfflineAudioContext')); return; }
+      const sr = 44100; let end = 0;
+      for (const [, dt] of def.notes) end = Math.max(end, dt + def.dur);
+      const oac = new OAC(1, Math.ceil((end + 0.06) * sr), sr);
+      for (const [freq, dt] of def.notes) {
+        const osc = oac.createOscillator(), g = oac.createGain();
+        osc.type = def.type; osc.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, dt);
+        g.gain.exponentialRampToValueAtTime(def.gain, dt + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, dt + def.dur);
+        osc.connect(g); g.connect(oac.destination);
+        osc.start(dt); osc.stop(dt + def.dur + 0.02);
+      }
+      const done = (b) => resolve(bufferToWavUri(b));
+      const p = oac.startRendering();
+      if (p && p.then) p.then(done).catch(reject); else oac.oncomplete = (e) => done(e.renderedBuffer);
+    } catch (e) { reject(e); }
+  });
+}
+
+// Render the chimes + build their <audio> elements (called at load; no gesture required).
+async function ensureChimes() {
+  if (_chimeUrls || _chimeRendering) return;
+  _chimeRendering = true;
+  try {
+    const urls = {};
+    for (const k in CHIME_DEFS) urls[k] = await renderChimeWav(CHIME_DEFS[k]);
+    _chimeUrls = urls;
+    _chimeEls = {};
+    for (const k in urls) {
+      const a = new Audio(urls[k]); a.preload = 'auto'; a.setAttribute('playsinline', '');
+      _chimeEls[k] = a;
+    }
+    if (_pendingUnlock) unlockChimes();
+  } catch (e) { _chimeUrls = null; } finally { _chimeRendering = false; }
+}
+
+// Silently "unlock" each chime element on a user gesture so it can be played programmatically
+// later (iOS requires the first media play to come from a gesture).
+function unlockChimes() {
+  if (!_chimeEls) { _pendingUnlock = true; ensureChimes(); return; }
+  for (const k in _chimeEls) {
+    const a = _chimeEls[k];
+    try {
+      a.muted = true;
+      const p = a.play();
+      if (p && p.then) p.then(() => { a.pause(); a.currentTime = 0; a.muted = false; }).catch(() => { a.muted = false; });
+      else { a.pause(); a.currentTime = 0; a.muted = false; }
+    } catch (e) { a.muted = false; }
+  }
+}
+
+// Play a chime through its MEDIA element (survives the iOS mute switch). Falls back to Web Audio
+// on platforms where the media element isn't ready (e.g. desktop before a gesture).
+function playChime(k) {
+  const a = _chimeEls && _chimeEls[k];
+  if (a) { try { a.currentTime = 0; const p = a.play(); if (p && p.catch) p.catch(() => tone(CHIME_DEFS[k])); return; } catch (e) {} }
+  tone(CHIME_DEFS[k]);
+}
+
+// Fallback: play the note sequence live via Web Audio (used when the media clip isn't available).
+function tone(def) {
+  if (!state.audio || !def) return;
   try {
     const ctx = state.audio, t0 = ctx.currentTime;
-    for (const [freq, dt] of notes) {
+    for (const [freq, dt] of def.notes) {
       const osc = ctx.createOscillator(), g = ctx.createGain();
-      osc.type = type; osc.frequency.value = freq;
+      osc.type = def.type; osc.frequency.value = freq;
       const s = t0 + dt;
       g.gain.setValueAtTime(0.0001, s);
-      g.gain.exponentialRampToValueAtTime(gain, s + 0.012);
-      g.gain.exponentialRampToValueAtTime(0.0001, s + dur);
+      g.gain.exponentialRampToValueAtTime(def.gain, s + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, s + def.dur);
       osc.connect(g); g.connect(ctx.destination);
-      osc.start(s); osc.stop(s + dur + 0.02);
+      osc.start(s); osc.stop(s + def.dur + 0.02);
     }
   } catch (e) {}
 }
 
 // Distinct, logical cues per check-in result.
-function chimeOk()   { tone([[784, 0], [1175, 0.085]], 'triangle', 0.2, 0.19);        // bright ascending
-                       if (navigator.vibrate) navigator.vibrate(60); }
-function chimeWarn() { tone([[588, 0], [588, 0.13]], 'triangle', 0.18, 0.15);         // two flat mid notes — "heads up"
-                       if (navigator.vibrate) navigator.vibrate([40, 60, 40]); }
-function chimeFail() { tone([[247, 0], [165, 0.14]], 'sawtooth', 0.17, 0.26);         // low descending buzz — "no"
-                       if (navigator.vibrate) navigator.vibrate([140, 70, 140]); }
+function chimeOk()   { playChime('ok');   if (navigator.vibrate) navigator.vibrate(60); }
+function chimeWarn() { playChime('warn'); if (navigator.vibrate) navigator.vibrate([40, 60, 40]); }
+function chimeFail() { playChime('fail'); if (navigator.vibrate) navigator.vibrate([140, 70, 140]); }
 
 // Sound for a check-in result (sheet mode only — driven by the receiver's status).
 function resultSound(status) {
@@ -437,9 +537,21 @@ async function startCamera() {
   state.track = stream.getVideoTracks()[0];
   video.srcObject = stream;
   await video.play().catch(() => {});
+  ensureVideoCover();
   setupCamTools();
   requestWakeLock();
 }
+
+// Re-assert that the camera preview fills the stage. On iOS the <video> can render letterboxed
+// (black bars, not covering) after a viewport change or a post-background stream rebuild until
+// the layout is nudged; forcing the sizing/object-fit again fixes it.
+function ensureVideoCover() {
+  const v = $('#video');
+  if (!v) return;
+  v.style.width = '100%'; v.style.height = '100%'; v.style.objectFit = 'cover';
+}
+window.addEventListener('resize', ensureVideoCover);
+window.addEventListener('orientationchange', () => setTimeout(ensureVideoCover, 250));
 
 function stopCamera() {
   if (state.stream) state.stream.getTracks().forEach(t => t.stop());
@@ -1090,6 +1202,9 @@ async function onStart() {
     await waitForRxSync(1500);   // let the receiver confirm its mode so scan UI paints correctly
     startScanning();
     state.sessionActive = true;   // resume auto-reboots camera/relay/OCR after backgrounding
+    // iOS exposes no API to read the system volume LEVEL (only the mute switch is worked around
+    // via the media channel), so we can't detect a turned-down volume — proactively remind instead.
+    if (!_volumeAdvised) { _volumeAdvised = true; toast('🔊 Turn your volume up — a sound confirms every scan', 3200); }
   } catch (e) {
     stopCamera();
     $('#gate').style.display = 'flex';   // re-show the gate so the error (e.g. OCR download) is visible
@@ -1184,6 +1299,7 @@ function applyRoomFromURL() {
 
 window.addEventListener('load', () => {
   wireUI();
+  ensureChimes();   // pre-render the result chimes to media clips (no gesture needed)
   const paired = applyRoomFromURL();
   state.needPairing = !paired;   // no ?room deep-link → scan the receiver's QR to pair
   refreshChrome();

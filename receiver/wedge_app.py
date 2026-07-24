@@ -52,7 +52,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.84"   # shared version across the Mac app + web app
+VERSION        = "14.85"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -241,6 +241,7 @@ class Api:
             self.start_pairing()
         else:
             self._emit("setup_required", {})
+        self._emit("ready", {})   # initial state (auth, initials, pairing/gate) is all out → reveal
 
     def start_pairing(self):
         """Generate a room, connect, and show the pairing QR until a phone says hello."""
@@ -516,7 +517,42 @@ class Api:
         self._emit_auth()
         self._emit("user_info", {"initials": sheets.get_user_initials()})
         self.push_recent_sheets()
+        self.accessibility_status()
+        self._emit("ready", {})   # state re-delivered on pywebviewready → reveal the UI
         return {"version": VERSION, "mode": self.mode}
+
+    @staticmethod
+    def _ax_trusted():
+        """True if this process has macOS Accessibility permission (needed to post keystrokes in
+        Keystroke mode); None off macOS."""
+        if sys.platform != "darwin":
+            return None
+        try:
+            import ctypes
+            import ctypes.util
+            lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library("ApplicationServices"))
+            lib.AXIsProcessTrusted.restype = ctypes.c_bool
+            return bool(lib.AXIsProcessTrusted())
+        except Exception:
+            return None
+
+    def accessibility_status(self):
+        """Report whether keystroke typing is permitted (macOS Accessibility). Only Keystroke
+        mode needs it — Union Pantry + Textbook Library don't."""
+        trusted = self._ax_trusted()
+        payload = {"mac": sys.platform == "darwin", "trusted": bool(trusted)}
+        self._emit("accessibility", payload)
+        return payload
+
+    def open_accessibility_settings(self):
+        """Open System Settings → Privacy & Security → Accessibility so the operator can enable us."""
+        if sys.platform == "darwin":
+            try:
+                import subprocess
+                subprocess.Popen(
+                    ["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
+            except Exception:
+                pass
 
     def set_user_initials(self, v):
         out = sheets.set_user_initials(v)

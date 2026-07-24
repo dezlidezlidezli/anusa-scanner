@@ -218,9 +218,24 @@
   .setup-title{font-weight:600;font-size:14px}
   .setup-sub{color:var(--muted);font-size:12px;margin-top:2px;line-height:1.45}
   .setup-item.done .setup-sub{color:var(--ok)}
+
+  /* boot overlay — covers the UI from first paint until Python has pushed all initial state,
+     so the auth/gate/pairing don't visibly flash into place while events arrive one by one */
+  #bootOverlay{position:fixed;inset:0;z-index:100;background:var(--bg);
+       display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+       transition:opacity .28s ease}
+  #bootOverlay.gone{opacity:0;pointer-events:none}
+  #bootOverlay .boot-brand{font-family:var(--mono);letter-spacing:.16em;color:var(--blue);font-size:14px}
+  #bootOverlay .boot-brand b{font-weight:700}
+  #bootOverlay .boot-spin{width:30px;height:30px;border:3px solid var(--line);
+       border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite}
 </style>
 </head>
 <body>
+<div id="bootOverlay">
+  <div class="boot-brand"><b>ANUSA&nbsp;SCANNER</b> · RECEIVER</div>
+  <div class="boot-spin"></div>
+</div>
 <div class="app">
   <header>
     <div class="brand"><b>ANUSA&nbsp;SCANNER</b><span> · RECEIVER</span></div>
@@ -228,7 +243,7 @@
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="settingsBtn" title="Settings">⚙ Settings<span class="badge" id="settingsBadge"></span></button>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver" style="display:none">v14.84</div>
+    <div class="ver" id="ver" style="display:none">v14.85</div>
   </header>
 
   <main>
@@ -243,8 +258,8 @@
         </div>
         <div class="divider"></div>
         <button class="btn soft wide" id="pairBtn">📱  Pair a phone — show QR</button>
-        <label class="fld" style="margin-top:12px">BROKER</label>
-        <input class="input" id="broker" value="wss://broker.emqx.io:8084/mqtt">
+        <!-- Broker is hidden — kept in the DOM so connect() still uses the default value. -->
+        <input type="hidden" id="broker" value="wss://broker.emqx.io:8084/mqtt">
       </div>
 
       <div class="card">
@@ -429,6 +444,17 @@
       <div class="row" style="gap:10px;flex-wrap:wrap">
         <button class="btn ghost" id="signinBtn">Sign in with Google</button>
         <span class="chip" id="oauthChip"><span class="dot"></span><span id="oauthStat">not signed in</span></span>
+      </div>
+    </div>
+
+    <div id="axSection" style="display:none">
+      <div class="divider"></div>
+      <label class="fld">KEYSTROKE-MODE ACCESS (macOS)</label>
+      <p class="auth-note">Typing scanned numbers into other apps needs macOS <b>Accessibility</b> permission. (Union Pantry + Textbook Library don't.)</p>
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <span class="chip" id="axChip"><span class="dot"></span><span id="axStat">checking…</span></span>
+        <button class="btn ghost" id="axOpen" style="padding:8px 12px;font-size:12px">Open System Settings</button>
+        <button class="btn ghost" id="axRecheck" style="padding:8px 12px;font-size:12px">Re-check</button>
       </div>
     </div>
 
@@ -651,6 +677,13 @@ window.uiEvent = (type, p={}) => {
   else if(type==='paired'){ $('#pairView').classList.add('hidden'); $('#qrBack').classList.remove('show'); }   // a phone said hello → close both the full-screen pairing view AND the "show QR" popup
   else if(type==='reset'){ ui.doReset(); }
   else if(type==='version'){ $('#ver').textContent='v'+p.v; }
+  else if(type==='ready'){ hideBoot(); }
+  else if(type==='accessibility'){
+    const sec=$('#axSection'); if(!sec) return;
+    sec.style.display = p.mac ? 'block' : 'none';   // only relevant on macOS
+    $('#axChip').className = 'chip ' + (p.trusted ? 'ok' : 'bad');
+    $('#axStat').textContent = p.trusted ? 'granted — keystrokes work' : 'not granted — enable to type';
+  }
   else if(type==='mode'){ ui.setMode(p.mode); }   // adopt the backend's mode (source of truth)
   else if(type==='tbpair'){ ui.setPair(p.student, p.code); ui.addPairRow(p.student, p.code, p.ts); }
 };
@@ -708,6 +741,8 @@ $('#userInitials').addEventListener('input', e => {
   const v = e.target.value.toUpperCase().replace(/[^A-Z]/g,'').slice(0,5);
   e.target.value = v; ui.setInitials(v); api().set_user_initials(v);   // optimistic gate update
 });
+$('#axOpen').onclick = () => api().open_accessibility_settings();
+$('#axRecheck').onclick = () => { $('#axStat').textContent='checking…'; $('#axChip').className='chip'; api().accessibility_status(); };
 $('#signinBtn').onclick = () => { $('#oauthStat').textContent='opening browser…'; api().sign_in(); };
 $('#saBtn').onclick = () => api().use_service_account();
 $('#saClear').onclick = (e) => { e.preventDefault(); api().clear_service_account(); };
@@ -822,6 +857,8 @@ const MOCK = {
   clear_service_account:()=>{MOCK._saHave=false;window.uiEvent('signed_in',{ok:false});
     window.uiEvent('auth',{mode:'service_account',ready:false,sa_present:false,sa_email:''});},
   set_user_initials:()=>{}, finish_setup:async()=>({ok:true}),
+  accessibility_status:()=>setTimeout(()=>window.uiEvent('accessibility',{mac:true,trusted:false}),150),
+  open_accessibility_settings:()=>{},
   _recent:[],
   load_sheet:(u)=>setTimeout(()=>{
     if(String(u).includes('denied')){   // preview the "not shared" flow
@@ -872,6 +909,10 @@ window.addEventListener('blur',  () => { ui._focused=false; ui.updateBanner(); i
    the backend stayed in keystroke mode → scans showed "test", and typing crashed the app
    (pynput on a background thread). So defer the seed and only run it if pywebview never
    initialises (i.e. we really are a plain browser). */
+function hideBoot(){ const b=$('#bootOverlay'); if(!b || b.classList.contains('gone')) return;
+  b.classList.add('gone'); setTimeout(()=>{ b.style.display='none'; }, 320); }
+setTimeout(hideBoot, 3500);   // safety net so the spinner can never get stuck
+
 let _appReady = false;
 window.addEventListener('pywebviewready', () => { _appReady = true; api().get_state(); });
 setTimeout(() => {
@@ -893,6 +934,7 @@ setTimeout(() => {
   ui.addHistory('7752506','already','warn','23:30:02');
   ui.addHistory('8047692','checked in','ok','23:27:00');
   window.uiEvent('show_pairing',{room:'9F2GM2',img:mockQR()});   // default: pairing screen
+  hideBoot();
 }, 1000);
 </script>
 </body>
