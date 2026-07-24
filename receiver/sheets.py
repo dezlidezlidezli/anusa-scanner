@@ -16,6 +16,7 @@ you actually sign in.
 """
 
 import datetime
+import json
 import os
 import re
 import sys
@@ -74,6 +75,85 @@ def has_service_account():
 def service_account_dest():
     """Where a UI-loaded service-account key is written (the writable per-user support dir)."""
     return str(_app_dir() / "service_account.json")
+
+
+def service_account_email():
+    """The client_email of the loaded service-account key (what to share sheets with), or None."""
+    p = service_account_file()
+    if not p:
+        return None
+    try:
+        with open(p) as f:
+            return json.load(f).get("client_email")
+    except Exception:
+        return None
+
+
+# ── auth-mode preference (persisted) ──────────────────────────────────────────
+# The app can authenticate to Google Sheets two ways; the operator picks one in
+# Settings and the choice is remembered across launches. New installs default to
+# the service account (no sign-in, no 7-day Testing-mode expiry).
+DEFAULT_AUTH_MODE = "service_account"
+AUTH_MODES = ("service_account", "oauth")
+
+
+def prefs_file():
+    return str(_app_dir() / "prefs.json")
+
+
+def _read_prefs():
+    try:
+        with open(prefs_file()) as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _write_prefs(d):
+    try:
+        with open(prefs_file(), "w") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+
+
+def get_auth_mode():
+    m = _read_prefs().get("auth_mode")
+    return m if m in AUTH_MODES else DEFAULT_AUTH_MODE
+
+
+def set_auth_mode(mode):
+    mode = mode if mode in AUTH_MODES else DEFAULT_AUTH_MODE
+    d = _read_prefs()
+    d["auth_mode"] = mode
+    _write_prefs(d)
+    return mode
+
+
+def get_user_initials():
+    v = _read_prefs().get("user_initials", "")
+    return str(v or "")
+
+
+def set_user_initials(v):
+    v = re.sub(r"[^A-Za-z]", "", str(v or "")).upper()[:5]
+    d = _read_prefs()
+    d["user_initials"] = v
+    _write_prefs(d)
+    return v
+
+
+def auth_ready(mode=None):
+    """True if the selected auth mode can build a Sheets service WITHOUT any interaction —
+    a loaded service-account key, or a cached OAuth token that's valid/refreshable."""
+    mode = mode or get_auth_mode()
+    if mode == "service_account":
+        return has_service_account()
+    try:
+        creds = _load_cached()
+        return bool(creds and (creds.valid or (creds.expired and creds.refresh_token)))
+    except Exception:
+        return False
 
 TRUE_SET = {"TRUE", "1", "YES", "Y", "X", "✓", "TICK", "PRESENT"}
 
@@ -154,15 +234,8 @@ def _load_cached():
 
 
 def token_available():
-    """True if a Sheets service can be built without a browser — a bundled service-account
-    key, or a cached OAuth token that's valid/refreshable."""
-    if service_account_file():
-        return True
-    try:
-        creds = _load_cached()
-        return bool(creds and (creds.valid or (creds.expired and creds.refresh_token)))
-    except Exception:
-        return False
+    """True if a Sheets service can be built without a browser for the SELECTED auth mode."""
+    return auth_ready()
 
 
 def _interactive_signin():
@@ -179,13 +252,17 @@ def _interactive_signin():
 
 
 def build_service(interactive=False):
-    """Return a Sheets service. A bundled service-account key is used if present (no sign-in);
-    otherwise interactive=True may open a browser to sign in, and interactive=False uses the
-    cached OAuth token (refreshing if needed) or raises."""
+    """Return a Sheets service for the SELECTED auth mode. In service-account mode the loaded
+    key is used (no sign-in) or it raises if none is loaded. In OAuth mode, interactive=True may
+    open a browser to sign in, and interactive=False uses the cached token (refreshing if
+    needed) or raises. The mode is authoritative — service-account mode never falls back to
+    OAuth and vice-versa, so the operator's choice in Settings is always honoured."""
     from googleapiclient.discovery import build
 
-    sa = service_account_file()
-    if sa:
+    if get_auth_mode() == "service_account":
+        sa = service_account_file()
+        if not sa:
+            raise RuntimeError("no service-account key loaded")
         from google.oauth2 import service_account
         creds = service_account.Credentials.from_service_account_file(sa, scopes=SCOPES)
         return build("sheets", "v4", credentials=creds, cache_discovery=False)

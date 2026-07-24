@@ -37,9 +37,12 @@
   header .conn.on .dot{background:#67e4a0}
   header .conn.off .dot{background:rgba(255,255,255,.5)}
   header .ver{opacity:.62;font-family:var(--mono);font-size:12px}
-  header .hbtn{border:1px solid rgba(255,255,255,.42);color:#fff;border-radius:8px;
+  header .hbtn{position:relative;border:1px solid rgba(255,255,255,.42);color:#fff;border-radius:8px;
        padding:5px 12px;font-size:12.5px;font-weight:600}
   header .hbtn:hover{background:rgba(255,255,255,.15)}
+  header .hbtn .badge{display:none;position:absolute;top:-4px;right:-4px;width:9px;height:9px;
+       border-radius:50%;background:#ff5a4d;border:1.5px solid var(--blue)}
+  header .hbtn .badge.show{display:block}
 
   /* ── body: two columns ─────────────────── */
   main{flex:1;display:grid;grid-template-columns:360px 1fr;grid-template-rows:minmax(0,1fr);
@@ -160,6 +163,17 @@
        border-radius:10px;padding:9px 12px;font-size:12.5px;font-weight:600;text-align:center}
   #banner.show{display:block}
 
+  /* auth-setup prompt (shown when the selected Google auth isn't ready) */
+  #authBanner{display:none;align-items:center;gap:10px;background:var(--warn-soft);color:var(--warn);
+       border:1px solid #f0dfae;border-radius:10px;padding:8px 10px 8px 14px;font-size:12.5px;font-weight:600}
+  #authBanner.show{display:flex}
+  #authBanner .btn{padding:5px 10px;font-size:12px;flex:none}
+  #authBanner .x{cursor:pointer;color:var(--warn);font-size:13px;opacity:.65;padding:2px 4px;flex:none}
+  #authBanner .x:hover{opacity:1}
+
+  /* settings modal auth panels */
+  .auth-note{font-size:12px;color:var(--muted);line-height:1.55;margin-bottom:12px}
+
   /* QR modal */
   .modal-back{position:fixed;inset:0;background:rgba(35,36,45,.42);display:none;
        align-items:center;justify-content:center;z-index:50}
@@ -200,8 +214,9 @@
     <div class="brand"><b>ANUSA&nbsp;SCANNER</b><span> · RECEIVER</span></div>
     <div class="spacer"></div>
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
+    <button class="hbtn" id="settingsBtn" title="Settings">⚙ Settings<span class="badge" id="settingsBadge"></span></button>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver">v14.78</div>
+    <div class="ver" id="ver">v14.79</div>
   </header>
 
   <main>
@@ -242,6 +257,11 @@
 
     <!-- RIGHT: monitor -->
     <div class="col right">
+      <div id="authBanner">
+        <span id="authBannerTxt" style="flex:1">⚠ Google Sheets authentication isn't set up — finish it in Settings.</span>
+        <button class="btn ghost" id="authBannerBtn">⚙ Open Settings</button>
+        <span class="x" id="authBannerX" title="dismiss">✕</span>
+      </div>
       <div id="banner">⚠ Keystroke mode — this window is focused, so scans show here but aren't typed</div>
 
       <div id="fuzzyBar" style="display:none">
@@ -296,16 +316,10 @@
 <div class="modal-back" id="pantryBack">
   <div class="modal pantry-modal">
     <h2>Union&nbsp;Pantry check-in</h2>
-    <p>Sign in, paste the roster sheet, then choose the columns to check students in.</p>
-    <div class="row" id="signedRow" style="justify-content:space-between;margin-bottom:6px;gap:8px">
-      <div class="row" id="signBtns" style="gap:8px">
-        <button class="btn ghost" id="signinBtn">Sign in with Google</button>
-        <button class="btn ghost" id="saBtn" title="Use a service-account JSON key — no sign-in, no expiry">Use service account</button>
-      </div>
-      <span class="who" id="signedWho"></span>
-    </div>
-    <div id="saEmail" style="display:none;font-size:11.5px;color:var(--muted);margin:-2px 0 8px">
-      Share roster sheets with <b id="saEmailTxt" style="color:var(--text)"></b> · <a href="#" id="saClear" style="color:var(--blue)">remove</a>
+    <p>Paste the roster sheet, then choose the columns to check students in.</p>
+    <div class="row" id="pantryAuthRow" style="justify-content:space-between;margin-bottom:12px;gap:8px">
+      <span class="chip" id="pantryAuthChip"><span class="dot"></span><span id="pantryAuthStat">checking…</span></span>
+      <button class="btn ghost" id="pantryAuthSetup" style="padding:6px 12px;font-size:12px;display:none">⚙ Set up in Settings</button>
     </div>
     <label class="fld" style="margin-top:10px">SHEET URL</label>
     <div class="row">
@@ -322,6 +336,49 @@
       <button class="btn ghost" id="syncBtn" style="padding:6px 11px;font-size:12px">↻ Re-sync</button>
     </div>
     <button class="btn primary wide" id="pantryDone" style="margin-top:20px">Start scanning</button>
+  </div>
+</div>
+
+<div class="modal-back" id="settingsBack">
+  <div class="modal pantry-modal">
+    <h2>Settings</h2>
+
+    <!-- User info -->
+    <label class="fld">YOUR INITIALS</label>
+    <p class="auth-note" style="margin-top:5px">Recorded against each check-in for record-keeping — so scans can be traced to whoever was running the scanner.</p>
+    <input class="input" id="userInitials" maxlength="5" placeholder="e.g. MK"
+           style="text-transform:uppercase;max-width:150px;font-family:var(--mono);letter-spacing:.14em">
+
+    <div class="divider"></div>
+
+    <!-- Authentication -->
+    <label class="fld">GOOGLE SHEETS AUTHENTICATION</label>
+    <div class="seg" id="authSeg" style="margin:6px 0 14px">
+      <button data-auth="service_account">Service account</button>
+      <button data-auth="oauth">Google sign-in</button>
+    </div>
+
+    <div class="auth-panel" id="authSA">
+      <p class="auth-note">Authenticate as a service account — no sign-in and no expiry. Share each roster sheet (as Editor) with the service-account email below, then it just works.</p>
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <button class="btn ghost" id="saBtn">Load key…</button>
+        <span class="chip" id="saChip"><span class="dot"></span><span id="saStat">no key loaded</span></span>
+      </div>
+      <div id="saEmail" style="display:none;font-size:12px;color:var(--muted);margin-top:10px;line-height:1.55">
+        Share roster sheets with<br><b id="saEmailTxt" style="color:var(--text);font-family:var(--mono)"></b>
+        &nbsp;·&nbsp;<a href="#" id="saClear" style="color:var(--blue)">remove key</a>
+      </div>
+    </div>
+
+    <div class="auth-panel" id="authOAuth" style="display:none">
+      <p class="auth-note">Sign in with your own Google account. In Testing mode the sign-in expires after 7 days and must be renewed.</p>
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <button class="btn ghost" id="signinBtn">Sign in with Google</button>
+        <span class="chip" id="oauthChip"><span class="dot"></span><span id="oauthStat">not signed in</span></span>
+      </div>
+    </div>
+
+    <button class="btn primary wide" id="settingsDone" style="margin-top:24px">Done</button>
   </div>
 </div>
 
@@ -346,6 +403,7 @@ const api = () => (window.pywebview && window.pywebview.api) || MOCK;
 
 const ui = {
   connected:false, mode:'keys', signedIn:false, sheetReady:false, headers:[], history:[], roster:[],
+  auth:{mode:'service_account', ready:false, saPresent:false, saEmail:''}, _authDismissed:false,
 
   setConn(on, room){
     this.connected = on;
@@ -427,6 +485,36 @@ const ui = {
     if(!this.headers.length) return;
     api().set_columns($('#colId').value, $('#colTick').value, $('#colName').value);  // values are indices
   },
+  setAuth(p){
+    this.auth = {mode:p.mode||'service_account', ready:!!p.ready,
+                 saPresent:!!p.sa_present, saEmail:p.sa_email||''};
+    this.renderAuth();
+  },
+  renderAuth(){
+    const a = this.auth;
+    // which mode is selected
+    document.querySelectorAll('#authSeg button').forEach(b => b.classList.toggle('on', b.dataset.auth===a.mode));
+    $('#authSA').style.display    = a.mode==='service_account' ? 'block' : 'none';
+    $('#authOAuth').style.display = a.mode==='oauth' ? 'block' : 'none';
+    // service-account panel
+    $('#saChip').className = 'chip ' + (a.saPresent ? 'ok' : '');
+    $('#saStat').textContent = a.saPresent ? 'key loaded — ready' : 'no key loaded';
+    if(a.saEmail) $('#saEmailTxt').textContent = a.saEmail;
+    $('#saEmail').style.display = (a.saPresent && a.saEmail) ? 'block' : 'none';
+    // oauth panel
+    const oOk = a.mode==='oauth' && a.ready;
+    $('#oauthChip').className = 'chip ' + (oOk ? 'ok' : '');
+    $('#oauthStat').textContent = oOk ? 'signed in — ready' : 'not signed in';
+    // readiness surfaces
+    const modeLabel = a.mode==='service_account' ? 'Service account' : 'Google sign-in';
+    $('#settingsBadge').classList.toggle('show', !a.ready);
+    $('#pantryAuthChip').className = 'chip ' + (a.ready ? 'ok' : 'bad');
+    $('#pantryAuthStat').textContent = a.ready ? (modeLabel+' — ready') : (modeLabel+' — not set up');
+    $('#pantryAuthSetup').style.display = a.ready ? 'none' : 'inline-flex';
+    const lb = $('#loadBtn'); if(lb) lb.disabled = !a.ready;
+    if(a.ready) this._authDismissed = false;          // becoming ready re-arms the prompt
+    $('#authBanner').classList.toggle('show', !a.ready && !this._authDismissed);
+  },
   setSheetStat(text, kind){   // reflect in the modal and the on-card summary
     ['#sheetStat','#pantryStat'].forEach(s=>{const e=$(s); if(e) e.textContent=text;});
     ['#sheetChip','#pantryChip'].forEach(s=>{const e=$(s); if(e) e.className='chip '+(kind||'');});
@@ -435,7 +523,7 @@ const ui = {
     this.history=[]; $('#histList').innerHTML='<li class="empty-hint">Scans will appear here.</li>';
     this.setState('', 'waiting', '', '');
     this.setMode('keys');
-    this.sheetReady=false; this.setSheetStat('sign in, then load a sheet','');
+    this.sheetReady=false; this.setSheetStat('load a roster sheet','');
     ['#colId','#colTick','#colName'].forEach(s=>$(s).innerHTML='');
     $('#sheetUrl').value='';
     closePantry();
@@ -459,16 +547,10 @@ window.uiEvent = (type, p={}) => {
   else if(type==='roster'){ ui.roster = p.list||[]; }
   else if(type==='attendance'){ showAttendance(p); }
   else if(type==='fuzzy'){ showFuzzy(p); }
-  else if(type==='signed_in'){
-    ui.signedIn=p.ok;
-    // With a service account there's no user sign-in — hide the buttons and say so.
-    $('#signBtns').style.display = p.ok ? 'none' : 'flex';
-    const who=$('#signedWho');
-    who.textContent = p.ok ? (p.sa ? '✓  Service account' : '✓  Google account — OAuth valid') : '';
-    who.style.display = p.ok ? 'inline-flex' : 'none';
-    if(!(p.ok && p.sa)) $('#saEmail').style.display='none';
-  }
-  else if(type==='sa_email'){ $('#saEmailTxt').textContent=p.email||''; $('#saEmail').style.display='block'; }
+  else if(type==='signed_in'){ ui.signedIn=p.ok; }   // display is driven by the 'auth' event
+  else if(type==='auth'){ ui.setAuth(p); }
+  else if(type==='sa_email'){ $('#saEmailTxt').textContent=p.email||''; }
+  else if(type==='user_info'){ $('#userInitials').value = p.initials||''; }
   else if(type==='sheet_loaded'){ ui.fillCols(p.headers, p.guess); ui.setSheetStat(p.tab+' · '+p.rows+' rows', 'ok'); }
   else if(type==='sheet_status'){ ui.setSheetStat(p.text, p.kind); ui.sheetReady = p.kind==='ok'; }
   else if(type==='show_pairing'){ $('#pairQr').src=p.img; $('#pairRoom').textContent='room '+p.room; $('#pairView').classList.remove('hidden'); }
@@ -499,9 +581,27 @@ $('#pantryEdit').onclick = openPantry;
 $('#pantryReload').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
 $('#pantryDone').onclick = closePantry;
 $('#pantryBack').onclick = e => { if(e.target.id==='pantryBack') closePantry(); };
-$('#signinBtn').onclick = () => { $('#signedWho').textContent='opening browser…'; api().sign_in(); };
+$('#pantryAuthSetup').onclick = () => { closePantry(); openSettings(); };
+
+/* ── app-wide Settings menu (user info + auth) ── */
+function openSettings(){ ui.renderAuth(); $('#settingsBack').classList.add('show'); }
+function closeSettings(){ $('#settingsBack').classList.remove('show'); }
+$('#settingsBtn').onclick = openSettings;
+$('#settingsDone').onclick = closeSettings;
+$('#settingsBack').onclick = e => { if(e.target.id==='settingsBack') closeSettings(); };
+document.querySelectorAll('#authSeg button').forEach(b => b.onclick = () => {
+  ui.auth.mode = b.dataset.auth; ui.renderAuth();   // optimistic; backend confirms via 'auth'
+  api().set_auth_mode(b.dataset.auth);
+});
+$('#authBannerBtn').onclick = openSettings;
+$('#authBannerX').onclick = () => { ui._authDismissed=true; $('#authBanner').classList.remove('show'); };
+$('#userInitials').addEventListener('input', e => {
+  const v = e.target.value.toUpperCase().replace(/[^A-Z]/g,'').slice(0,5);
+  e.target.value = v; api().set_user_initials(v);
+});
+$('#signinBtn').onclick = () => { $('#oauthStat').textContent='opening browser…'; api().sign_in(); };
 $('#saBtn').onclick = () => api().use_service_account();
-$('#saClear').onclick = (e) => { e.preventDefault(); $('#saEmail').style.display='none'; api().clear_service_account(); };
+$('#saClear').onclick = (e) => { e.preventDefault(); api().clear_service_account(); };
 $('#loadBtn').onclick = () => { ui.setSheetStat('loading…','warn'); api().load_sheet($('#sheetUrl').value.trim()); };
 $('#syncBtn').onclick = () => { ui.setSheetStat('re-syncing…','warn'); api().sync(); };
 ['#colId','#colTick','#colName'].forEach(s => $(s).onchange = () => ui.applyCols());
@@ -585,9 +685,19 @@ const MOCK = {
   disconnect:()=>window.uiEvent('status',{kind:'off'}),
   set_mode:()=>{}, set_columns:()=>mockSheetData(),
   sync:()=>setTimeout(()=>{ui.setSheetStat('re-synced · 137 rows','ok');mockSheetData();},400),
-  sign_in:()=>setTimeout(()=>window.uiEvent('signed_in',{ok:true}),500),
-  use_service_account:()=>setTimeout(()=>{window.uiEvent('sa_email',{email:'anusa-scanner@my-proj.iam.gserviceaccount.com'});window.uiEvent('signed_in',{ok:true,sa:true});},300),
-  clear_service_account:()=>window.uiEvent('signed_in',{ok:false}),
+  _saEmail:'anusa-scanner@my-proj.iam.gserviceaccount.com',
+  set_auth_mode:(m)=>setTimeout(()=>{
+    if(m==='service_account') window.uiEvent('auth',{mode:m,ready:!!MOCK._saHave,sa_present:!!MOCK._saHave,sa_email:MOCK._saEmail});
+    else window.uiEvent('auth',{mode:m,ready:!!MOCK._oauth,sa_present:!!MOCK._saHave,sa_email:MOCK._saEmail});
+  },150),
+  sign_in:()=>setTimeout(()=>{MOCK._oauth=true;window.uiEvent('signed_in',{ok:true});
+    window.uiEvent('auth',{mode:'oauth',ready:true,sa_present:!!MOCK._saHave,sa_email:MOCK._saEmail});},500),
+  use_service_account:()=>setTimeout(()=>{MOCK._saHave=true;
+    window.uiEvent('sa_email',{email:MOCK._saEmail});window.uiEvent('signed_in',{ok:true,sa:true});
+    window.uiEvent('auth',{mode:'service_account',ready:true,sa_present:true,sa_email:MOCK._saEmail});},300),
+  clear_service_account:()=>{MOCK._saHave=false;window.uiEvent('signed_in',{ok:false});
+    window.uiEvent('auth',{mode:'service_account',ready:false,sa_present:false,sa_email:''});},
+  set_user_initials:()=>{},
   load_sheet:()=>setTimeout(()=>window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,
       headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:[2,4,1]}),500),
   manual:(v)=>{
@@ -603,7 +713,8 @@ const MOCK = {
   },
   confirm_fuzzy:(id)=>{ const r=MOCK_ROSTER.find(x=>x.id===id); window.uiEvent('working',{id});
     setTimeout(()=>window.uiEvent('result',{status:'checked-in',id,name:r?r.name:'',ts:clock()}),300); },
-  download_csv:()=>{}, pair_qr:async()=>({room:'9F2GM2',img:mockQR()}), set_focus:()=>{}, get_state:()=>{},
+  download_csv:()=>{}, pair_qr:async()=>({room:'9F2GM2',img:mockQR()}), set_focus:()=>{},
+  get_state:()=>window.uiEvent('auth',{mode:'service_account',ready:!!MOCK._saHave,sa_present:!!MOCK._saHave,sa_email:MOCK._saEmail}),
   new_day:()=>{ ui.doReset(); window.uiEvent('show_pairing',{room:'NEWDAY',img:mockQR()}); },
 };
 function clock(){ return new Date().toTimeString().slice(0,8); }
@@ -632,8 +743,10 @@ setTimeout(() => {
   // signals so this can't hinge on a timing race: the API object, the ready event, or a
   // real status/sign-in event having already arrived.
   if (_appReady || window.pywebview || ui.connected || ui.signedIn) return;
+  MOCK._saHave = true;   // preview: service account set up + ready
   ui.setMode('sheet'); ui.setConn(true,'9F2GM2'); ui._focused=true;
-  window.uiEvent('signed_in',{ok:true});
+  window.uiEvent('signed_in',{ok:true,sa:true});
+  window.uiEvent('auth',{mode:'service_account',ready:true,sa_present:true,sa_email:MOCK._saEmail});
   window.uiEvent('sheet_loaded',{tab:'This Week',rows:137,headers:['Email Address','Full Name:','UID:','Career','Attendence'],guess:[2,4,1]});
   ui.roster = MOCK_ROSTER; window.uiEvent('attendance',{present:42,total:137});
   window.uiEvent('result',{status:'checked-in',id:'8221537',name:'Malakai King',ts:'23:31:41'});

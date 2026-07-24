@@ -52,7 +52,7 @@ import sheets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.78"   # shared version across the Mac app + web app
+VERSION        = "14.79"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -231,7 +231,8 @@ class Api:
         self.window = window
         threading.Thread(target=self._drain, daemon=True).start()
         self._emit("version", {"v": VERSION})
-        if sheets.token_available():
+        self._emit_auth()      # tell the UI the saved auth mode + whether it's ready on open
+        if sheets.auth_ready():
             threading.Thread(target=lambda: self._do_sign_in(False), daemon=True).start()
         self.start_pairing()   # open to the pairing QR; a phone's "hello" reveals the app
 
@@ -264,6 +265,17 @@ class Api:
                 "window.uiEvent(%s, %s)" % (json.dumps(kind), json.dumps(payload or {})))
         except Exception:
             pass
+
+    def _emit_auth(self):
+        """Single source of truth for the Settings auth panel: which mode is selected, whether
+        it's ready to use without interaction, and (service account) the email to share with."""
+        mode = sheets.get_auth_mode()
+        self._emit("auth", {
+            "mode": mode,
+            "ready": sheets.auth_ready(mode),
+            "sa_present": sheets.has_service_account(),
+            "sa_email": sheets.service_account_email() or "",
+        })
 
     # ── queue drain ──────────────────────────────────────────────────────────
     def _drain(self):
@@ -465,7 +477,12 @@ class Api:
     def get_state(self):
         self._emit("version", {"v": VERSION})
         self._emit("mode", {"mode": self.mode})   # UI adopts the backend's real mode
+        self._emit_auth()
+        self._emit("user_info", {"initials": sheets.get_user_initials()})
         return {"version": VERSION, "mode": self.mode}
+
+    def set_user_initials(self, v):
+        return sheets.set_user_initials(v)
 
     def set_focus(self, f):
         self.focused = bool(f)
@@ -498,7 +515,20 @@ class Api:
         self.bridge.stop()
         self._emit("status", {"kind": "off"})
 
+    def set_auth_mode(self, mode):
+        """Switch between OAuth and service-account auth (persisted). Rebuilds the session
+        non-interactively if the newly-selected mode is already set up; otherwise the UI
+        prompts for set-up. Never opens a browser — that's the explicit 'Sign in' button."""
+        mode = sheets.set_auth_mode(mode)
+        self.sheet = None
+        if sheets.auth_ready(mode):
+            self._do_sign_in(False)
+        else:
+            self._emit_auth()
+        return mode
+
     def sign_in(self):
+        sheets.set_auth_mode("oauth")   # the browser sign-in button implies OAuth mode
         threading.Thread(target=lambda: self._do_sign_in(True), daemon=True).start()
 
     def use_service_account(self):
@@ -524,26 +554,31 @@ class Api:
         except Exception as e:
             self._emit("sheet_status", {"text": f"couldn't load key: {str(e)[:40]}", "kind": "bad"})
             return
+        sheets.set_auth_mode("service_account")   # loading a key selects service-account mode
         self._emit("sa_email", {"email": data.get("client_email", "")})
         self._do_sign_in(False)   # picks up the new key → builds the service, signed_in{sa:true}
 
     def clear_service_account(self):
-        """Remove a UI-loaded service-account key (revert to Google sign-in)."""
+        """Remove a UI-loaded service-account key."""
         try:
             os.remove(sheets.service_account_dest())
         except FileNotFoundError:
             pass
-        self.sheet = None
+        if sheets.get_auth_mode() == "service_account":
+            self.sheet = None
         self._emit("signed_in", {"ok": False, "sa": False})
+        self._emit_auth()
 
     def _do_sign_in(self, interactive):
         try:
             svc = sheets.build_service(interactive=interactive)
             self.sheet = sheets.SheetSession(svc)
-            self._emit("signed_in", {"ok": True, "sa": sheets.has_service_account()})
+            self._emit("signed_in", {"ok": True, "sa": sheets.get_auth_mode() == "service_account"})
         except Exception as e:
             if interactive:
                 self._emit("sheet_status", {"text": f"sign-in failed: {str(e)[:40]}", "kind": "bad"})
+        finally:
+            self._emit_auth()   # keep the Settings panel's ready/not-ready state in sync
 
     def load_sheet(self, url):
         if not self.sheet:
