@@ -9,7 +9,7 @@
      deploy, so a version bump never re-downloads the ~20MB. Bump ASSETS_VER only when the
      models or a pinned library version actually change. */
 
-const SHELL  = 'anusa-shell-v14-82';   // ← bump every deploy (small app files)
+const SHELL  = 'anusa-shell-v14-83';   // ← bump every deploy (small app files)
 const ASSETS = 'anusa-assets-v1';      // ← STABLE; bump ONLY when models/CDN libs change
 const KEEP = [SHELL, ASSETS];
 

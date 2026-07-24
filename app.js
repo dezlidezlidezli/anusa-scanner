@@ -60,6 +60,7 @@ const state = {
   _resuming: false,
   rxSynced: false,     // received the receiver's mode/roster since connecting (setup handshake)
   _syncResolve: null,
+  _silentEl: null,     // silent looping <audio> that holds the iOS media channel open
 };
 
 /* ────────────────────────── crypto ──────────────────────────── */
@@ -336,8 +337,47 @@ function toast(msg) {
   clearTimeout(t._h); t._h = setTimeout(() => { t.style.display = 'none'; }, 1800);
 }
 
+// A short silent WAV, generated once — played on a loop through an <audio> element to hold the
+// iOS *media* audio channel open (see primeMediaChannel).
+const SILENT_WAV = (() => {
+  try {
+    const sr = 8000, n = 2400, hdr = 44, buf = new Uint8Array(hdr + n), dv = new DataView(buf.buffer);
+    const wr = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    wr(0, 'RIFF'); dv.setUint32(4, 36 + n, true); wr(8, 'WAVE'); wr(12, 'fmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true);
+    wr(36, 'data'); dv.setUint32(40, n, true);
+    for (let i = 0; i < n; i++) buf[hdr + i] = 128;      // 8-bit unsigned silence
+    let bin = ''; for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+    return 'data:audio/wav;base64,' + btoa(bin);
+  } catch (e) { return ''; }
+})();
+
+// iOS routes Web Audio through the RINGER channel by default, so result chimes are silenced by
+// the mute switch / low ring volume even with media volume up (a well-documented WebKit quirk —
+// "auto" session type is "ambient"). Fix it on the first user gesture two ways: (1) the
+// AudioSession API — declare this page 'playback' audio, which uses the media channel and
+// ignores the mute switch (iOS 16.4+); (2) a silent looping <audio> element as a fallback on
+// older iOS, which holds the media channel open so Web Audio follows it.
+function primeMediaChannel() {
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+  if (state._silentEl) { state._silentEl.play().catch(() => {}); return; }
+  if (!SILENT_WAV) return;
+  try {
+    const el = document.createElement('audio');
+    el.loop = true; el.preload = 'auto'; el.setAttribute('playsinline', '');
+    el.src = SILENT_WAV; el.volume = 0.02;
+    el.play().catch(() => {});
+    state._silentEl = el;
+  } catch (e) {}
+}
+
 function unlockAudio() {
-  if (state.audio) return;
+  primeMediaChannel();
+  if (state.audio) {
+    if (state.audio.state === 'suspended') state.audio.resume().catch(() => {});   // e.g. after resume
+    return;
+  }
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     state.audio = new Ctx();
