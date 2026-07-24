@@ -75,6 +75,12 @@ if [ -f service_account.json ]; then
     echo "→ Added dist/service_account.json (Install.command installs it to Application Support)"
 fi
 
+# Remove PyInstaller's redundant "onedir" folder (dist/<name>/ with _internal/). The .app bundle
+# is fully self-contained (it has its own Frameworks/ + Resources/), so this loose copy is never
+# distributed — deleting it leaves dist/ holding ONLY the files you actually send.
+rm -rf "dist/${APP_NAME}" 2>/dev/null || true
+rm -f  "dist/.DS_Store" 2>/dev/null || true
+
 # ── 5. Done ───────────────────────────────────────────────────────────────────
 echo ""
 echo "✓  dist/${APP_NAME}.app is ready"
