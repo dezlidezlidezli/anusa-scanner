@@ -66,7 +66,7 @@ except Exception:
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.92"   # shared version across the Mac app + web app
+VERSION        = "14.93"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -375,9 +375,11 @@ class Api:
             self.bridge.send_status(data.get("seq"), data.get("dev"), "test", "", sid)
             return
         ok = self._type_id(sid)
-        self._record(ts, sid, "typed" if ok else "error")
-        self._emit("result", {"status": "typed" if ok else "error",
-                              "id": sid, "name": "", "ts": ts})
+        # A keystroke failure is NOT a sheet error — it's almost always missing Accessibility
+        # permission. Use a distinct status so the UI can say what to fix.
+        self._record(ts, sid, "typed" if ok else "typing-failed")
+        self._emit("result", {"status": "typed" if ok else "typing-failed", "id": sid,
+                              "name": "" if ok else "grant Accessibility in System Settings", "ts": ts})
         self.bridge.ack(data.get("seq"), data.get("dev"))
 
     @staticmethod
@@ -427,8 +429,9 @@ class Api:
             self.bridge.send_status(data.get("seq"), data.get("dev"), "fuzzy", name, sid)
             return
         self._record(ts, sid, status)
-        self._emit("result", {"status": status, "id": sid,
-                              "name": name if status != "error" else "", "ts": ts})
+        # Send `name` even on errors — for an error it carries the ACTIONABLE reason (e.g. "share
+        # the sheet as Editor…"); blanking it left the operator with a bare "SHEET ERROR".
+        self._emit("result", {"status": status, "id": sid, "name": name, "ts": ts})
         self.bridge.send_status(data.get("seq"), data.get("dev"), status, name, sid)
         if status == "checked-in":
             self._push_attendance()
@@ -552,7 +555,10 @@ class Api:
                 # never overwrites existing data. Write now; refresh the register AFTER (off-path).
                 self.sheet.append_borrow(student, code, who, datetime.now().strftime("%d/%m/%Y"))
                 row_status = "on-hire"
-                self._tb_resync_bg()
+                # append_borrow already wrote the row into the local cache, so push the register
+                # straight from cache — NO re-read (a re-read here could race Google's propagation
+                # and read the row back empty, making the next borrow reuse the same row).
+                self._push_tbregister()
             except Exception as e:
                 row_status = "error"
                 if self._sa_permission(e):
@@ -585,7 +591,7 @@ class Api:
             self.sheet.log_return(open_row, who, datetime.now().strftime("%d/%m/%Y"))
             self._log_pair_csv(ts, student, "RETURN:" + str(open_code), who)
             self._emit("tbpair", {"student": student, "code": open_code, "ts": ts, "status": "returned"})
-            self._tb_resync_bg()   # refresh register AFTER the write, off the response path
+            self._push_tbregister()   # cache already reflects the return — push from cache, no re-read
         except Exception as e:
             if self._sa_permission(e):
                 self._emit("sheet_status",
@@ -974,13 +980,24 @@ def _selftest():
         from qrcode.image.styledpil import StyledPilImage  # noqa: F401
         from qrcode.image.styles.moduledrawers import RoundedModuleDrawer  # noqa: F401
         import webview as _wv  # noqa: F401
+        # Deps + resources that have actually broken a build before — verify them explicitly so a
+        # broken bundle FAILS the build instead of shipping.
+        import paho.mqtt.client  # noqa: F401  (MQTT)
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: F401
+        import PIL  # noqa: F401  (QR rendering)
+        if sys.platform == "darwin":
+            import Quartz  # noqa: F401  (keystroke typing — CGEvents)
+        if not (CA_BUNDLE and os.path.exists(CA_BUNDLE)):
+            raise RuntimeError(f"certifi CA bundle missing at {CA_BUNDLE!r} — TLS would fail on other Macs")
+        if not os.path.exists(_resource("ui.html")):
+            raise RuntimeError("ui.html not bundled")
         # Exercise the service build too, but a missing/expired token is fine here.
         try:
             sheets.build_service(interactive=False).spreadsheets()
             auth = "signed in"
         except Exception as e:
             auth = f"no valid session ({type(e).__name__}) — ok"
-        print(f"SELFTEST OK: google + sheets + qrcode + pywebview [{auth}]")
+        print(f"SELFTEST OK: deps + certifi + ui.html [{auth}]")
         return 0
     except Exception as e:
         print(f"SELFTEST FAIL: {type(e).__name__}: {e}")

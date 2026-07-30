@@ -397,7 +397,7 @@ class SheetSession:
         """Load a spreadsheet tab. Returns {title, tab, tabs, headers, rows}."""
         with self._lock:
             self.sid = spreadsheet_id(url)
-            meta = self.svc.spreadsheets().get(spreadsheetId=self.sid).execute()
+            meta = self.svc.spreadsheets().get(spreadsheetId=self.sid).execute(num_retries=5)
             tabs = [s["properties"] for s in meta.get("sheets", [])]
             if tab:
                 self.tab = tab
@@ -568,7 +568,7 @@ class SheetSession:
             put(self.tb_code_i, code)                 # e.g. PAL/001
             self.svc.spreadsheets().values().batchUpdate(
                 spreadsheetId=self.sid,
-                body={"valueInputOption": "USER_ENTERED", "data": data}).execute()
+                body={"valueInputOption": "USER_ENTERED", "data": data}).execute(num_retries=5)
             return target + 1
 
     def _is_open_row(self, r):
@@ -613,7 +613,7 @@ class SheetSession:
             if data:
                 self.svc.spreadsheets().values().batchUpdate(
                     spreadsheetId=self.sid,
-                    body={"valueInputOption": "USER_ENTERED", "data": data}).execute()
+                    body={"valueInputOption": "USER_ENTERED", "data": data}).execute(num_retries=5)
             return row
 
     def tb_register(self):
@@ -693,7 +693,7 @@ class SheetSession:
                     spreadsheetId=self.sid,
                     body={"valueInputOption": "USER_ENTERED",
                           "data": [{"range": f"'{self.tab}'!{col}{r + 1}", "values": [["TRUE"]]}
-                                   for r in to_tick]}).execute()
+                                   for r in to_tick]}).execute(num_retries=5)
             except Exception:
                 for r in to_tick:              # revert so a retry works + attendance stays honest
                     self._set_cell(r, self.tick_i, "FALSE")
@@ -782,7 +782,7 @@ class SheetSession:
     # ── internals (call with _lock held) ─────────────────────────────────────
     def _reload_locked(self):
         self.values = self.svc.spreadsheets().values().get(
-            spreadsheetId=self.sid, range=f"'{self.tab}'").execute().get("values", [])
+            spreadsheetId=self.sid, range=f"'{self.tab}'").execute(num_retries=5).get("values", [])
         self.header_i = self._detect_header_row()
         self.headers = self.values[self.header_i] if self.values else []
 

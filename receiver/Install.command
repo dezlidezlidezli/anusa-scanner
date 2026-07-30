@@ -19,8 +19,12 @@ echo ""
 TARGET=""
 if [ -d "$HERE/$APP" ]; then
     echo "→ Installing to /Applications…"
+    # Quit any running copy first, or macOS refuses to replace the running bundle and `open` below
+    # just re-focuses the OLD version (the "I updated but it's still the old build" trap).
+    pkill -f "/Applications/$APP/Contents/MacOS/" 2>/dev/null && sleep 1 || true
     rm -rf "/Applications/$APP" 2>/dev/null
-    if cp -R "$HERE/$APP" /Applications/ 2>/dev/null; then
+    # ditto (not cp -R) preserves the code signature + bundle metadata intact.
+    if ditto "$HERE/$APP" "/Applications/$APP" 2>/dev/null; then
         TARGET="/Applications/$APP"
     else
         echo "  (couldn't write to /Applications — running it from here instead)"

@@ -179,7 +179,8 @@
        align-items:center;justify-content:center;z-index:50}
   .modal-back.show{display:flex}
   .modal{background:#fff;border-radius:18px;padding:26px 30px 24px;text-align:center;
-       box-shadow:0 20px 60px rgba(20,20,40,.28);max-width:380px}
+       box-shadow:0 20px 60px rgba(20,20,40,.28);max-width:380px;
+       max-height:90vh;overflow-y:auto}   /* scroll a tall modal so its buttons stay reachable */
   .modal h2{font-size:17px;margin-bottom:4px}
   .modal p{color:var(--muted);font-size:12.5px;margin-bottom:16px}
   .modal .qr{width:250px;height:250px;border-radius:12px;background:#fff;display:block;margin:0 auto}
@@ -193,7 +194,8 @@
        align-items:center;justify-content:center;padding:24px}
   .pair-view.hidden{display:none}
   .pair-card{background:#fff;border:1px solid var(--line);border-radius:22px;
-       box-shadow:0 24px 64px rgba(20,20,40,.10);padding:34px 44px 30px;text-align:center;max-width:430px}
+       box-shadow:0 24px 64px rgba(20,20,40,.10);padding:34px 44px 30px;text-align:center;max-width:430px;
+       max-height:92vh;overflow-y:auto}
   .pair-brand{font-family:var(--mono);letter-spacing:.16em;color:var(--blue);font-size:15px;margin-bottom:18px}
   .pair-brand b{font-weight:700}
   .pair-card h2{font-size:21px;margin-bottom:6px}
@@ -244,7 +246,7 @@
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="settingsBtn" title="Settings">⚙ Settings<span class="badge" id="settingsBadge"></span></button>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver" style="display:none">v14.92</div>
+    <div class="ver" id="ver" style="display:none">v14.93</div>
   </header>
 
   <main>
@@ -529,7 +531,7 @@ const ui = {
     if(this.history.length===0) ul.innerHTML='';
     this.history.unshift({student, code, ts});
     const li = document.createElement('li'); li.className='hrow';
-    li.innerHTML = `<span class="t">${ts}</span><span class="id">u${student} → ${code}</span>`;
+    li.innerHTML = `<span class="t">${escapeHtml(ts)}</span><span class="id">u${escapeHtml(String(student))} → ${escapeHtml(String(code))}</span>`;
     ul.insertBefore(li, ul.firstChild);
     while(ul.children.length>60) ul.removeChild(ul.lastChild);
   },
@@ -549,8 +551,8 @@ const ui = {
     this.history.unshift({id,label,cls,ts});
     const li = document.createElement('li');
     li.className='hrow';
-    li.innerHTML = `<span class="t">${ts}</span><span class="id">u${id}</span>`
-                 + `<span class="st ${cls||''}">${label}</span>`;
+    li.innerHTML = `<span class="t">${escapeHtml(String(ts))}</span><span class="id">u${escapeHtml(String(id))}</span>`
+                 + `<span class="st ${cls||''}">${escapeHtml(String(label))}</span>`;
     ul.insertBefore(li, ul.firstChild);
     while(ul.children.length>60) ul.removeChild(ul.lastChild);
   },
@@ -712,16 +714,17 @@ const ui = {
 
 /* Python → UI */
 window.uiEvent = (type, p={}) => {
-  if(type==='status'){ ui.setConn(p.kind==='ok', p.room||''); if(p.kind && p.kind!=='ok') $('#connText').textContent=p.text; }
+  if(type==='status'){ ui.setConn(p.kind==='ok', p.room||''); if(p.kind && p.kind!=='ok') $('#connText').textContent = p.text || (p.kind==='off' ? 'not connected' : 'connection problem'); }
   else if(type==='focus'){ ui._focused=p.focused; ui.updateBanner(); }
   else if(type==='working'){ ui.setState('', 'checking…', p.id, ''); }
   else if(type==='result'){
     hideFuzzy();
     const M={'checked-in':['ok','CHECKED IN'],'already':['warn','ALREADY IN'],
              'not-registered':['bad','NOT REGISTERED'],'error':['bad','SHEET ERROR'],
+             'typing-failed':['bad','COULDN’T TYPE'],
              'typed':['ok','TYPED'],'test':['warn','TEST — NOT TYPED']};
     const [cls,word]=M[p.status]||['',p.status];
-    ui.setState(cls, word, p.id, p.name);
+    ui.setState(cls, word, p.id, p.name);   // p.name now carries the actionable reason on errors
     ui.addHistory(p.id, (M[p.status]?M[p.status][1].toLowerCase():p.status), cls, p.ts);
   }
   else if(type==='roster'){ ui.roster = p.list||[]; }
@@ -854,10 +857,11 @@ function renderSuggest(){
   const v = $('#manualIn').value, box = $('#manualSuggest');
   const m = (v && ui.roster.length) ? ui.roster.filter(r => r.id.startsWith(v)).slice(0,6) : [];
   if(!m.length){ hideSuggest(); return; }
-  _sugSel = 0;
+  _sugSel = -1;   // nothing pre-selected — Enter submits EXACTLY what was typed (typing "822153"
+                  // must NOT silently become the top suggestion "8221537"). Tab/↓ accept a suggestion.
   box.innerHTML = m.map((r,i) =>
-    `<div class="s-row${i===0?' sel':''}" data-id="${r.id}">`
-    + `<span class="s-id">u${r.id}</span>`
+    `<div class="s-row" data-id="${escapeHtml(String(r.id))}">`
+    + `<span class="s-id">u${escapeHtml(String(r.id))}</span>`
     + `<span class="s-name">${r.name ? escapeHtml(r.name) : '—'}</span>`
     + `<span class="s-hint">${i===0?'Tab ⇥':''}</span></div>`).join('');
   box.querySelectorAll('.s-row').forEach(row => row.onclick = () => {
@@ -987,6 +991,11 @@ function mockQR(){ // simple placeholder grid so the modal previews
 /* window focus drives the keystroke-mode test banner */
 window.addEventListener('focus', () => { ui._focused=true; ui.updateBanner(); if(window.pywebview) api().set_focus(true); });
 window.addEventListener('blur',  () => { ui._focused=false; ui.updateBanner(); if(window.pywebview) api().set_focus(false); });
+// Initialise focus at launch — the window is already focused when it opens, so the focus event
+// never fires; without this the backend defaults to focused=False and types into its own window.
+window.addEventListener('pywebviewready', () => {
+  const f = document.hasFocus(); ui._focused = f; ui.updateBanner(); api().set_focus(f);
+});
 
 /* boot: in the real app, adopt Python's state; in a plain browser, seed a demo preview.
    The preview seed must NEVER run inside the app. It used to: window.pywebview isn't

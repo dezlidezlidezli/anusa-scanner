@@ -58,8 +58,16 @@ pyinstaller \
 # keeps it as clean as possible. To remove the badge entirely you need an Apple
 # Developer ID + notarization. Recipients: right-click → Open the first time.
 echo "→ Clearing attributes + ad-hoc signing…"
-xattr -cr "dist/${APP_NAME}.app" 2>/dev/null || true
-codesign --force --deep --sign - "dist/${APP_NAME}.app" 2>/dev/null || true
+xattr -cr "dist/${APP_NAME}.app"
+codesign --force --deep --sign - "dist/${APP_NAME}.app"          # fail the build if signing errors
+codesign --verify --strict "dist/${APP_NAME}.app" || { echo "✗ signature verification FAILED"; exit 1; }
+
+# Self-test the frozen bundle — imports every dep (paho, Quartz, PIL, google, webview), checks
+# certifi's CA bundle exists and ui.html is present. Catches the class of bug where the build
+# "succeeds" but the app is broken on a fresh Mac (e.g. the missing-CA-cert TLS failure).
+echo "→ Self-testing the bundle…"
+"dist/${APP_NAME}.app/Contents/MacOS/${APP_NAME}" --selftest \
+    || { echo "✗ self-test FAILED — the built app is broken; NOT shipping"; exit 1; }
 
 # Ship the first-run installer next to the app so recipients don't have to right-click → Open.
 if [ -f Install.command ]; then
