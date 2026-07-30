@@ -66,7 +66,7 @@ except Exception:
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-VERSION        = "14.91"   # shared version across the Mac app + web app
+VERSION        = "14.92"   # shared version across the Mac app + web app
 DEFAULT_BROKER = "wss://broker.emqx.io:8084/mqtt"
 PWA_URL        = "https://dezlidezlidezli.github.io/anusa-scanner/"  # for pairing QR
 LOG_PATH       = Path.home() / "Documents" / "ANUSAScanner_scans.csv"
@@ -229,7 +229,10 @@ class Bridge:
         c.on_message    = on_message
 
         try:
-            c.connect(host, port, keepalive=30)
+            # connect_async (not connect) so a failed FIRST connect — DNS hiccup, captive portal,
+            # broker down at launch — doesn't raise out of the thread. loop_forever then keeps
+            # retrying (retry_first_connection) until the network comes good, instead of dying.
+            c.connect_async(host, port, keepalive=30)
             c.loop_forever(retry_first_connection=True)
         except Exception as e:
             self._q.put(("status", "err", str(e)))
@@ -257,6 +260,7 @@ class Api:
     def attach(self, window):
         self.window = window
         threading.Thread(target=self._drain, daemon=True).start()
+        threading.Thread(target=self._periodic_sync, daemon=True).start()
         self._emit("version", {"v": VERSION})
         self._emit_auth()      # tell the UI the saved auth mode + whether it's ready on open
         self._emit("user_info", {"initials": sheets.get_user_initials()})
@@ -527,17 +531,28 @@ class Api:
         who = sheets.get_user_initials()
         # If a Textbook borrow-log sheet is set up, append the row (Status/Date/Initials/UID/Code).
         row_status = None
-        if self.mode == "textbook" and self.sheet and self.sheet_ready and self.sheet.tb_uid_i is not None:
-            # One book each: if this student already has an OPEN borrow, DON'T hire a second.
+        tb_ready = self.sheet and self.sheet_ready and self.sheet.tb_uid_i is not None
+        if self.mode == "textbook" and not tb_ready:
+            # Sheet not set up (or torn down by an auth change) — say so instead of silently
+            # recording only to the local CSV.
+            self._emit("sheet_status",
+                       {"text": "textbook sheet not set up — logged to CSV only", "kind": "warn"})
+        if self.mode == "textbook" and tb_ready:
+            # One book each — checked against the local cache (instant, no API read). The cache is
+            # kept fresh by a background resync AFTER each write + a periodic pull, so we never block
+            # the scan on a live read.
             open_row, open_code = self.sheet.find_open_borrow(student)
             if open_row is not None:
                 self._emit("tbpair", {"student": student, "code": code, "ts": ts,
                                       "status": "already", "existing": open_code})
+                self._tb_resync_bg()   # maybe they returned directly — refresh so a re-scan is right
                 return
             try:
+                # append_borrow finds the next EMPTY row and writes only that row's cells, so it
+                # never overwrites existing data. Write now; refresh the register AFTER (off-path).
                 self.sheet.append_borrow(student, code, who, datetime.now().strftime("%d/%m/%Y"))
                 row_status = "on-hire"
-                self._push_tbregister()
+                self._tb_resync_bg()
             except Exception as e:
                 row_status = "error"
                 if self._sa_permission(e):
@@ -557,16 +572,20 @@ class Api:
             return
         who = sheets.get_user_initials()
         if not (self.mode == "textbook" and self.sheet and self.sheet_ready and self.sheet.tb_uid_i is not None):
+            self._emit("sheet_status",
+                       {"text": "textbook sheet not set up — return NOT recorded", "kind": "bad"})
+            self._emit("tbpair", {"student": student, "code": "", "ts": ts, "status": "no-sheet"})
             return
-        open_row, open_code = self.sheet.find_open_borrow(student)
+        open_row, open_code = self.sheet.find_open_borrow(student)   # cache, instant
         if open_row is None:
             self._emit("tbpair", {"student": student, "code": "", "ts": ts, "status": "no-borrow"})
+            self._tb_resync_bg()
             return
         try:
             self.sheet.log_return(open_row, who, datetime.now().strftime("%d/%m/%Y"))
-            self._push_tbregister()
             self._log_pair_csv(ts, student, "RETURN:" + str(open_code), who)
             self._emit("tbpair", {"student": student, "code": open_code, "ts": ts, "status": "returned"})
+            self._tb_resync_bg()   # refresh register AFTER the write, off the response path
         except Exception as e:
             if self._sa_permission(e):
                 self._emit("sheet_status",
@@ -706,6 +725,7 @@ class Api:
         prompts for set-up. Never opens a browser — that's the explicit 'Sign in' button."""
         mode = sheets.set_auth_mode(mode)
         self.sheet = None
+        self.sheet_ready = False   # the loaded sheet + column mapping die with the session
         if sheets.auth_ready(mode):
             self._do_sign_in(False)
         else:
@@ -751,6 +771,7 @@ class Api:
             pass
         if sheets.get_auth_mode() == "service_account":
             self.sheet = None
+            self.sheet_ready = False
         self._emit("signed_in", {"ok": False, "sa": False})
         self._emit_auth()
 
@@ -758,6 +779,7 @@ class Api:
         try:
             svc = sheets.build_service(interactive=interactive)
             self.sheet = sheets.SheetSession(svc)
+            self.sheet_ready = False   # fresh session — no sheet loaded / columns mapped yet
             self._emit("signed_in", {"ok": True, "sa": sheets.get_auth_mode() == "service_account"})
         except Exception as e:
             if interactive:
@@ -852,6 +874,27 @@ class Api:
             self.bridge.send_tbregister(reg)
         except Exception:
             pass
+
+    def _tb_resync(self):
+        """Pull the live sheet + re-push the borrow register. Run AFTER a write (in a bg thread) or
+        on the periodic timer — never before a scan's response, so scans stay snappy."""
+        try:
+            if (self.mode == "textbook" and self.sheet and self.sheet_ready
+                    and self.sheet.tb_uid_i is not None):
+                self.sheet.refresh()
+                self._push_tbregister()
+        except Exception:
+            pass
+
+    def _tb_resync_bg(self):
+        threading.Thread(target=self._tb_resync, daemon=True).start()
+
+    def _periodic_sync(self):
+        """Every ~30s, resync so a return/borrow entered DIRECTLY in the Google Sheet reaches the
+        phones' one-book check without needing a scan."""
+        while True:
+            time.sleep(30)
+            self._tb_resync()
 
     def sync(self):
         if not self.sheet or self.sheet.sid is None:

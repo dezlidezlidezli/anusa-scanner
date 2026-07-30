@@ -448,8 +448,15 @@ class SheetSession:
         """Set the ID / tick / name columns. Accepts an explicit 0-based INDEX (what the
         dropdowns send — so duplicate header names pick the exact column) or a text spec
         (header name / letter / 'today')."""
-        self.id_i = self._to_index(id_col)
-        self.tick_i = self._to_index(tick_col)
+        id_i = self._to_index(id_col)
+        tick_i = self._to_index(tick_col)
+        # The tick write must NEVER land on the ID column, or every check-in overwrites the
+        # student's number with TRUE. (Happens when a sheet has no guessable tick header and both
+        # dropdowns default to column A.)
+        if id_i == tick_i:
+            raise ValueError("ID and Tick must be different columns")
+        self.id_i = id_i
+        self.tick_i = tick_i
         self.name_i = (None if name_col in (None, "", "(none)", -1, "-1")
                        else self._to_index(name_col))
 
@@ -508,11 +515,21 @@ class SheetSession:
     def set_textbook_columns(self, status, date, init, uid, code, return_by=None, real_return=None):
         def idx(v):
             return None if v in (None, "", "(none)", -1, "-1") else self._to_index(v)
-        self.tb_status_i = self._to_index(status)
-        self.tb_date_i = self._to_index(date)
-        self.tb_init_i = self._to_index(init)
-        self.tb_uid_i = self._to_index(uid)
-        self.tb_code_i = self._to_index(code)
+        status_i = self._to_index(status)
+        date_i = self._to_index(date)
+        init_i = self._to_index(init)
+        uid_i = self._to_index(uid)
+        code_i = self._to_index(code)
+        # The five borrow columns are written together in one row — if any two map to the same
+        # column the row is corrupted (last write wins). Reject collisions.
+        write_cols = [status_i, date_i, init_i, uid_i, code_i]
+        if len(set(write_cols)) != len(write_cols):
+            raise ValueError("Status, Date, Initials, UID and Assigned Codes must be different columns")
+        self.tb_status_i = status_i
+        self.tb_date_i = date_i
+        self.tb_init_i = init_i
+        self.tb_uid_i = uid_i
+        self.tb_code_i = code_i
         self.tb_retby_i = idx(return_by)
         self.tb_realret_i = idx(real_return)
 
@@ -522,11 +539,14 @@ class SheetSession:
         with self._lock:
             if self.tb_uid_i is None or self.tb_status_i is None:
                 raise RuntimeError("textbook columns not set")
+            # First TRULY-empty row: UID, Status AND Code all blank — so we never overwrite a row
+            # someone has partly filled in directly in the form.
             target = None
             for r in range(self.header_i + 1, len(self.values)):
                 u = normalize(self._cell(r, self.tb_uid_i))
                 s = str(self._cell(r, self.tb_status_i)).strip()
-                if not u and not s:
+                c = str(self._cell(r, self.tb_code_i)).strip() if self.tb_code_i is not None else ""
+                if not u and not s and not c:
                     target = r
                     break
             if target is None:

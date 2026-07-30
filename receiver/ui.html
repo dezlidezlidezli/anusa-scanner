@@ -244,7 +244,7 @@
     <div class="conn off" id="connPill"><span class="dot"></span><span id="connText">not connected</span></div>
     <button class="hbtn" id="settingsBtn" title="Settings">⚙ Settings<span class="badge" id="settingsBadge"></span></button>
     <button class="hbtn" id="newDayBtn">↻ New day</button>
-    <div class="ver" id="ver" style="display:none">v14.91</div>
+    <div class="ver" id="ver" style="display:none">v14.92</div>
   </header>
 
   <main>
@@ -568,9 +568,13 @@ const ui = {
     };
     const fill = (sel, gi, allowNone) => {
       const s = $(sel); s.innerHTML='';
+      const unguessed = (gi==null || gi<0);
       if(allowNone){ const e=document.createElement('option'); e.value=''; e.textContent='(none)'; s.appendChild(e); }
+      // A mandatory column with no guess must NOT silently default to column A (that made ticks
+      // overwrite the UID). Force an explicit choice with a placeholder.
+      else if(unguessed){ const e=document.createElement('option'); e.value=''; e.textContent='— select column —'; e.disabled=true; s.appendChild(e); }
       headers.forEach((h, i) => { const e=document.createElement('option'); e.value=String(i); e.textContent=label(h,i); s.appendChild(e); });
-      s.value = (gi==null || gi<0) ? (allowNone ? '' : '0') : String(gi);
+      s.value = unguessed ? '' : String(gi);
     };
     fill('#colId', guess[0], false);
     fill('#colTick', guess[1], false);
@@ -579,6 +583,9 @@ const ui = {
   },
   applyCols(){
     if(!this.headers.length) return;
+    if($('#colId').value==='' || $('#colTick').value===''){   // a mandatory column isn't chosen
+      this.sheetReady=false; this.setSheetStat('choose the ID and Tick columns','warn'); return;
+    }
     api().set_columns($('#colId').value, $('#colTick').value, $('#colName').value);  // values are indices
   },
   fillTbCols(headers, guess){   // Textbook borrow-log: Status / Date / Initials / UID / Codes
@@ -589,9 +596,11 @@ const ui = {
     const label = (h,i) => { const txt=(h==null||String(h).trim()==='')?'(blank col '+colLetter(i)+')':String(h);
       return counts[String(h==null?'':h).trim().toLowerCase()]>1 ? `${txt}  ·  col ${colLetter(i)}` : txt; };
     const fill = (sel, gi, allowNone) => { const s=$(sel); s.innerHTML='';
+      const unguessed = (gi==null||gi<0);
       if(allowNone){ const e=document.createElement('option'); e.value=''; e.textContent='(none)'; s.appendChild(e); }
+      else if(unguessed){ const e=document.createElement('option'); e.value=''; e.textContent='— select column —'; e.disabled=true; s.appendChild(e); }
       headers.forEach((h,i)=>{ const e=document.createElement('option'); e.value=String(i); e.textContent=label(h,i); s.appendChild(e); });
-      s.value = (gi==null||gi<0) ? (allowNone?'':'0') : String(gi); };
+      s.value = unguessed ? '' : String(gi); };
     fill('#tbStatus', guess[0], false); fill('#tbDate', guess[1], false); fill('#tbInit', guess[2], false);
     fill('#tbUid', guess[3], false); fill('#tbCode', guess[4], false);
     fill('#tbRetBy', guess[5], true); fill('#tbRealRet', guess[6], true);   // return cols optional
@@ -599,6 +608,9 @@ const ui = {
   },
   applyTbCols(){
     if(!this.headers.length) return;
+    if(['#tbStatus','#tbDate','#tbInit','#tbUid','#tbCode'].some(s => $(s).value==='')){
+      this.sheetReady=false; this.setSheetStat('choose all five borrow columns','warn'); return;
+    }
     api().set_textbook_columns($('#tbStatus').value, $('#tbDate').value, $('#tbInit').value,
                                $('#tbUid').value, $('#tbCode').value,
                                $('#tbRetBy').value, $('#tbRealRet').value);

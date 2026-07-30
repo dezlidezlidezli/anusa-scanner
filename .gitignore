@@ -31,3 +31,9 @@ service_account.json
 **/credentials.json
 **/token.json
 prefs.json
+# Any JSON dropped in receiver/ (raw service-account key downloads land here, e.g. proj-4f3a1b2c.json)
+receiver/*.json
+
+# Distributable archives — may bundle dist/ (which contains the real service-account key)
+*.zip
+*.dmg

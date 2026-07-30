@@ -239,6 +239,16 @@ function applyRoster(rows) {
 function showLocalResult(id, seq) {
   if (!state.roster) return false;   // roster not synced (e.g. keystroke mode) → let the Mac answer
   const r = state.roster[normId(id)];
+  // A NEW check-in can only be RECORDED via the Mac. If the relay is down we must NOT show green
+  // "checked in" or optimistically tick — nothing is being written. Show a queued state instead;
+  // the scan is QoS-1 queued and the Mac's echo confirms it once we reconnect. ('already' and
+  // 'not-registered' are local facts that need no write, so they're safe to show offline.)
+  if (r && !r.ticked && !state.connected) {
+    unlockAudio(); chimeWarn();
+    markHistory(seq, 'queued — offline', 'warn');
+    setReadout(id, 'queued — reconnecting', 'warn');
+    return true;
+  }
   let status, name;
   if (!r)              { status = 'not-registered'; name = ''; }
   else if (r.ticked)   { status = 'already';        name = r.name; }
@@ -418,7 +428,7 @@ const CHIME_DEFS = {
   warn: { notes: [[588, 0], [588, 0.13]],   type: 'triangle', gain: 0.45, dur: 0.15 },  // two flat mid notes
   fail: { notes: [[247, 0], [165, 0.14]],   type: 'sawtooth', gain: 0.4,  dur: 0.26 },  // low descending buzz
 };
-let _chimeUrls = null, _chimeEls = null, _chimeRendering = false, _pendingUnlock = false;
+let _chimeUrls = null, _chimeEls = null, _chimeRendering = false, _pendingUnlock = false, _chimesUnlocked = false;
 
 // Encode a mono AudioBuffer to a 16-bit PCM WAV data: URI.
 function bufferToWavUri(buf) {
@@ -479,7 +489,12 @@ async function ensureChimes() {
 // Silently "unlock" each chime element on a user gesture so it can be played programmatically
 // later (iOS requires the first media play to come from a gesture).
 function unlockChimes() {
+  // Unlock the <audio> chime elements EXACTLY ONCE (on the first user gesture). Doing it again on
+  // the result path was the bug: the unlock plays each clip muted then pause()s it on the promise
+  // tick — which landed on the very chime resultSound() had just started, cutting it off.
+  if (_chimesUnlocked) return;
   if (!_chimeEls) { _pendingUnlock = true; ensureChimes(); return; }
+  _chimesUnlocked = true;
   for (const k in _chimeEls) {
     const a = _chimeEls[k];
     try {
