@@ -52,6 +52,17 @@ pyinstaller \
     "${CREDS_FLAG[@]}" \
     wedge_app.py
 
+# Stamp the real version into Info.plist (PyInstaller leaves it 0.0.0) BEFORE signing, so operators
+# can tell which build they're running (About this Mac / right-click → Get Info). Also set a min OS.
+VER=$(grep -E '^VERSION ' wedge_app.py | sed -E 's/.*"([0-9.]+)".*/\1/')
+PLIST="dist/${APP_NAME}.app/Contents/Info.plist"
+for kv in "CFBundleShortVersionString:${VER}" "CFBundleVersion:${VER}" "LSMinimumSystemVersion:11.0"; do
+    k="${kv%%:*}"; v="${kv#*:}"
+    /usr/libexec/PlistBuddy -c "Set :$k $v" "$PLIST" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Add :$k string $v" "$PLIST"
+done
+echo "→ Stamped version ${VER} into Info.plist"
+
 # ── 4. Make it as launch-clean as possible on THIS Mac ────────────────────────
 # The app is unsigned (ad-hoc). Gatekeeper still marks unsigned apps with a
 # prohibitory badge on first launch — clearing attributes and re-signing ad-hoc

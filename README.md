@@ -28,15 +28,26 @@ The models (~10 MB) live in [`models/`](models/) and, with the ONNX runtime (~11
 are downloaded once on first use (with a progress bar) and then cached by the service
 worker in a stable cache that survives app updates.
 
-## Two receiver modes
+## Three receiver modes
 
 - **Type keystrokes** — the number + Enter is typed into whatever window has focus on the
   Mac. The same workflow as a handheld "keyboard-wedge" barcode scanner, done with a phone.
-- **Union Pantry (Google Sheet)** — the Mac signs in with your Google account and flips the
-  scanned student's tick `FALSE → TRUE` on a sheet you pick, showing **checked-in / already
-  in / not registered** on both the Mac and the phone. Includes manual entry with name
-  autofill, a live attendance %, and a fuzzy "did you mean…?" prompt for one-digit typos in
-  the sheet.
+  (Needs macOS Accessibility permission — the receiver's Settings shows the status.)
+- **Union Pantry (Google Sheet)** — the Mac flips the scanned student's tick `FALSE → TRUE`
+  on a roster sheet you pick, showing **checked-in / already in / not registered** on both
+  the Mac and the phone. Includes manual entry with name autofill, a live attendance %, and a
+  fuzzy "did you mean…?" prompt for one-digit typos in the sheet.
+- **Textbook Library** — a two-stage flow (scan the student card, then scan the textbook code,
+  e.g. `PAL/001`) that **appends a borrow row** to a Google Sheet (Status *On Hire*, date,
+  operator initials, UID, code). One book per student is enforced: scanning a student who
+  already has a book out prompts to **log the return** (fills the return columns) or cancel.
+
+**Google auth** defaults to a **service account** — no sign-in and no expiry; you just share
+each sheet with the service account's email. (Google sign-in / OAuth is available in Settings
+as an alternative.) At launch the receiver requires both the **operator's initials** (recorded
+against each scan) and a **working Google auth** before it will pair a phone — see the setup
+gate. Column mappings are remembered per sheet + per worksheet tab, so reopening a sheet
+another day restores its exact setup.
 
 ## Why there's a receiver (the Bluetooth constraint)
 
@@ -65,9 +76,18 @@ cd receiver
 bash build_mac.sh          # installs deps, generates the icon, produces dist/ANUSA Scanner.app
 ```
 
-The app is unsigned, so on first launch **right-click → Open** (once) to get past Gatekeeper.
-For keystroke mode, also enable it under **System Settings → Privacy & Security →
-Accessibility** so it can type into other apps (Union Pantry mode doesn't need this).
+The build produces `dist/` containing **`ANUSA Scanner.app`**, **`Install.command`**, and (if a
+service-account key is present) **`service_account.json`**. Zip the whole `dist/` folder to
+distribute.
+
+**Recipients:** double-click **`Install.command`** once — it installs the app to /Applications,
+clears the download quarantine, drops the service-account key into Application Support, and
+launches. Because the app is unsigned, macOS blocks the *script itself* the first time: on
+**macOS Sequoia** the old right-click → Open no longer shows an Open button, so instead click
+**Done**, then **System Settings → Privacy & Security → Open Anyway**. (Alternatively, in Terminal:
+`xattr -dr com.apple.quarantine <the unzipped folder>`, then double-click.) Keystroke mode also
+needs **System Settings → Privacy & Security → Accessibility** enabled for the app — the receiver's
+Settings shows this status. Union Pantry + Textbook Library don't need Accessibility.
 
 To run from source instead of building: `pip install -r requirements.txt` then
 `python wedge_app.py`.
@@ -79,14 +99,18 @@ scans the code) and the two share a room automatically. Or tap **Skip → set up
 and type the room code shown in the phone's header into the Mac (and vice-versa). One room
 can hold several phones; the receiver de-duplicates.
 
-## Union Pantry (Google Sheets) setup
+## Google Sheets setup
 
-Sheet mode needs a Google OAuth "Desktop app" client — see
-[`receiver/SHEETS_SETUP.md`](receiver/SHEETS_SETUP.md). Drop the `credentials.json` next to
-the app (or in `~/Library/Application Support/ANUSA Scanner/`), click **Sign in with
-Google**, paste your sheet's URL, and confirm the **UID / attendance / name** columns (the
-app guesses them). For demos and screen-shares, import a roster of obviously-fake data
-(e.g. `u7878787` / John Smith / `TRUE`) rather than a real one, so no student data is exposed.
+Both sheet modes default to a **service account** — see
+[`receiver/SHEETS_SETUP.md`](receiver/SHEETS_SETUP.md). One-time: create a service account in
+Google Cloud, download its JSON key, and share each sheet (as **Editor**) with the account's
+`…@…iam.gserviceaccount.com` email (Settings shows/copies it). Then in the receiver: enter your
+**initials**, pick the sheet (recent list or paste a link) and worksheet **tab**, and confirm the
+columns — Union Pantry maps **UID / tick / name**; Textbook Library maps **Status / Date / Initials
+/ UID / Assigned Codes / Return-received-by / Real-return**, auto-detected across the sheet's header
+rows and remembered per sheet + tab. (Google sign-in / OAuth is available as an alternative in
+Settings.) For demos and screen-shares, use obviously-fake data (e.g. `u7878787` / John Smith)
+rather than real student records.
 
 ## How fast the result appears
 
@@ -99,8 +123,7 @@ broker; pointing both sides at a local/near broker makes even that feel instant.
 
 ## Scanning technique
 
-Hold the card so the number fills a good part of the frame, in decent light (a torch button
-appears if the phone supports it). On a confirmed read the brackets pulse **grey** and it
+Hold the card so the number fills a good part of the frame, in decent light. On a confirmed read the brackets pulse **grey** and it
 chimes — grey, not green, because a *scan* isn't yet a check-in; the full-screen **green /
 orange / red** result is the receiver's verdict once it's checked the sheet. The same card
 is ignored briefly so you can't double-send. Damaged card → **Type manually** on the Mac.
@@ -138,5 +161,5 @@ accordingly.
   into itself). Click your target app, or switch to Union Pantry.
 - **Nothing types (macOS)** — grant Accessibility permission (above); relaunch.
 - **"bridge offline"** — public brokers hiccup; wait a few seconds or switch broker.
-- **Slow/failed reads** — more light or use the torch; fill more of the frame with the card;
-  clean the lens. Glossy-laminate glare is the usual culprit — tilt the card slightly.
+- **Slow/failed reads** — add light; fill more of the frame with the card; clean the lens.
+  Glossy-laminate glare is the usual culprit — tilt the card slightly.

@@ -307,11 +307,6 @@ def _load_cached():
     return None
 
 
-def token_available():
-    """True if a Sheets service can be built without a browser for the SELECTED auth mode."""
-    return auth_ready()
-
-
 def _interactive_signin():
     """Open the browser sign-in flow and cache the new token."""
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -698,13 +693,6 @@ class SheetSession:
                 for r in to_tick:              # revert so a retry works + attendance stays honest
                     self._set_cell(r, self.tick_i, "FALSE")
                 raise
-
-    def check_in(self, student):
-        """Plan + commit synchronously (write confirmed before returning)."""
-        plan = self.plan_checkin(student)
-        if plan.get("status") == "checked-in":
-            self.commit_checkin(plan)
-        return plan
 
     def roster(self):
         """[{id, name}] for every row that has a UID — powers manual-entry autofill."""

@@ -1,110 +1,69 @@
-# Google Sheets check-in — setup (one-time)
+# Google Sheets — setup (one-time)
 
-Union Pantry mode writes to a Google Sheet. There are two ways to connect. **Keystroke and
-Textbook Library modes need none of this** — they don't touch Google.
+**Union Pantry** and **Textbook Library** both write to a Google Sheet. **Keystroke mode needs
+none of this** — it doesn't touch Google.
 
-- **Service account (recommended for sharing the app)** — no one ever signs in. You bundle one
-  key; each roster sheet is just *shared* with the service account's email. No sign-in, no
-  7-day token expiry, no "unverified app" warning, no verification — ever. Best when handing
-  the app to others.
-- **OAuth "Sign in with Google"** — each operator signs in with their own Google account. Fine
-  for personal use, but in a personal (non-Workspace) project it's stuck in **Testing** mode:
-  logins re-prompt every 7 days and show an "unverified app" screen. See §OAuth below.
+Two ways to authenticate; the receiver's **Settings** picks between them (new installs default to
+the service account):
 
-The app auto-detects which to use: if a bundled `service_account.json` is present it uses the
-service account; otherwise it falls back to OAuth.
+- **Service account (default, recommended for sharing the app)** — no one ever signs in. You
+  create one key; each sheet is just *shared* with the service account's email. No sign-in, no
+  7-day token expiry, no "unverified app" warning — ever.
+- **Google sign-in / OAuth** — each operator signs in with their own Google account. Fine for
+  personal use, but in a personal (non-Workspace) project it's stuck in **Testing** mode: logins
+  re-prompt every 7 days behind an "unverified app" screen. See §OAuth below.
+
+At launch the receiver requires **operator initials + working auth** before it will pair a phone.
 
 ## Service account (recommended, ~5 min once)
 
-1. <https://console.cloud.google.com/> → your project → **APIs & Services → Library →**
-   **Google Sheets API → Enable** (if it isn't already).
+1. <https://console.cloud.google.com/> → your project → **APIs & Services → Library → Google
+   Sheets API → Enable** (if it isn't already).
 2. **IAM & Admin → Service Accounts → Create service account.** Name it (e.g.
-   `anusa-scanner-sheets`). **Skip** the optional roles/access steps → **Done**.
+   `anusa-scanner`). **Skip** the optional roles/access steps → **Done**.
 3. Open the new service account → **Keys → Add key → Create new key → JSON → Create.** A JSON
    file downloads.
 4. Rename it to **`service_account.json`** and put it in `receiver/` (next to `build_mac.sh`).
    It's git-ignored — never commit it.
-5. Copy the service account's **email** — it looks like
-   `anusa-scanner-sheets@your-project.iam.gserviceaccount.com`.
-6. **For each roster sheet:** open it → **Share** → paste that email → set **Editor** → Send.
-   (Uncheck "Notify people" — it's not a real inbox.)
-7. Build: `bash build_mac.sh` (it bundles the key). Launch — under Union Pantry it shows
-   **✓ Service account**; no sign-in button. Paste a shared sheet's URL and go.
+5. Copy the service account's **email** — like `anusa-scanner@your-project.iam.gserviceaccount.com`
+   (the receiver's Settings also shows + copies it).
+6. **For every sheet you'll use** — Union Pantry rosters **and** Textbook Library borrow logs —
+   open it → **Share** → paste that email → set **Editor** → Send. (Uncheck "Notify people".)
+7. Build: `bash build_mac.sh`. It copies the key **loose into `dist/`** (not embedded in the
+   `.app`), and `Install.command` installs it to the recipient's
+   `~/Library/Application Support/ANUSA Scanner/` on first run. Launch → Settings shows
+   **key loaded — ready**; no sign-in.
 
-**Security:** the key is bundled inside the distributed `.app` and can be extracted. Its reach
-is limited to sheets you've shared with this service account — so use a **dedicated** service
-account for this, share only event rosters with it, and if the key ever leaks, rotate it
-(Service account → Keys → delete the old one, create a new one, rebuild). The built `.app` and
-the key are git-ignored, so they're never committed.
+**Distribution:** zip the whole `dist/` folder (`.app` + `Install.command` + `service_account.json`)
+and send it. The recipient double-clicks `Install.command` once.
+
+**Security / rotation:** the key is a real credential. It ships **loose in the zip** and lands in
+the recipient's Application Support (`chmod 600`) — it is *not* embedded in the distributed `.app`.
+Its reach is only sheets you've shared with it, so use a **dedicated** service account and share
+only event sheets. If a key leaks: **IAM → Service Accounts → Keys → delete** the old key, create a
+new one, rebuild, and re-distribute (old zips keep working until the key is deleted in IAM).
+Everything sensitive is git-ignored (`service_account.json`, `credentials.json`, `token.json`,
+`dist/`, `*.zip`) — never commit the key or the build.
 
 ---
 
-## OAuth (alternative — per-user sign-in)
+## OAuth (alternative — per-user Google sign-in)
 
-## 1. Create an OAuth client (~5 min, once)
+Only needed if you choose **Google sign-in** in Settings instead of a service account. This is a
+**developer-only** path — the OAuth client is not bundled into the distributed app.
 
-1. Go to <https://console.cloud.google.com/> and **create a project** (e.g. `anusa-scanner`).
-2. **APIs & Services → Library →** search **Google Sheets API → Enable**.
-3. **APIs & Services → OAuth consent screen:**
-   - User type: **External** → Create.
-   - App name `ANUSA Scanner`, your email as support + developer contact. Save.
-   - **Scopes:** add `.../auth/spreadsheets` (read/write Sheets). Save.
-   - **Test users:** add every Google account that will run the scanner (yours to
-     start). Save. *(Test mode is fine for a handful of people; tokens re-prompt
-     every 7 days. To make logins persistent, later hit "Publish app" — it stays
-     usable while "unverified", just shows a one-time "Google hasn't verified this
-     app → Advanced → Go to app" screen.)*
-4. **APIs & Services → Credentials → Create credentials → OAuth client ID:**
-   - Application type: **Desktop app** → Create.
-   - **Download JSON**, rename it to **`credentials.json`**, and put it next to
-     `sheets_auth_spike.py` (in `receiver/`).
+1. <https://console.cloud.google.com/> → **create a project** (e.g. `anusa-scanner`).
+2. **APIs & Services → Library → Google Sheets API → Enable**.
+3. **APIs & Services → OAuth consent screen:** User type **External** → Create; app name
+   `ANUSA Scanner`, your email as support + developer contact; **Scopes:** add
+   `.../auth/spreadsheets`; **Test users:** add every Google account that will sign in. *(Test mode
+   re-prompts every 7 days. "Publish app" makes logins persistent but shows a one-time "Google
+   hasn't verified this app → Advanced → Go to app" screen.)*
+4. **Credentials → Create credentials → OAuth client ID → Desktop app → Create → Download JSON.**
+   Rename to **`credentials.json`** and put it in `~/Library/Application Support/ANUSA Scanner/`
+   (or `receiver/` when running from source). Git-ignored — never commit it.
+5. In the receiver: **Settings → Google sign-in → Sign in with Google.** A browser opens once;
+   the token is cached in Application Support (and refreshed until the 7-day Testing expiry).
 
-`credentials.json` and the generated `token.json` are git-ignored — never commit them.
-
-## 2. Install deps
-
-```
-pip install google-api-python-client google-auth-oauthlib google-auth-httplib2
-```
-
-## 3. Run the spike
-
-Auth + inspect a sheet (no writes) — a browser opens for sign-in the first time:
-
-```
-python3 sheets_auth_spike.py --url "https://docs.google.com/spreadsheets/d/XXXX/edit#gid=0"
-```
-
-It prints the tabs, the header row, and row count. Use those headers to pick your
-columns, then test an actual tick:
-
-```
-python3 sheets_auth_spike.py --url "…" \
-    --id-col "Student ID" --tick-col today --name-col "Name" --student u8221537
-```
-
-- `--id-col` / `--tick-col` accept a **column letter** (`C`, `H`) or a **header name**.
-- `--tick-col today` auto-detects a header matching today's date (handles the
-  "different column each day" case).
-- `--student` may include the `u` or not — both match.
-
-Expected output ends in one of:
-
-```
-STATUS: checked-in  ·  Jane Doe  (ticked 'Sheet1'!H5)
-STATUS: already     ·  Jane Doe  (row 5 already TRUE)
-STATUS: not-registered  (u8221537 not found in column C)
-```
-
-Those three are exactly the statuses the Mac app will send back to the phone over
-MQTT once this is wired in.
-
-## What comes after the spike works
-
-1. Move `get_service` + the normalize/resolve/tick helpers into the receiver.
-2. Add a **Google Sheet** mode to the receiver UI: **Sign in with Google**, sheet
-   URL field, and dropdowns for ID / tick / name columns (populated from the header
-   row; tick defaults to today's-date column).
-3. On each scan: look up → flip `FALSE`→`TRUE` → publish `{t:'checkin', status, name}`
-   back to the phone, which shows `checked-in` / `already` / `not registered`.
-4. If Sheets is unreachable: report `error` and stop (no queue), per spec.
+Then set up a sheet exactly as in the service-account flow (pick the sheet + tab, confirm the
+columns). The `token.json` the app writes is git-ignored too.
